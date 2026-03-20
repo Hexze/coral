@@ -42,3 +42,10 @@ jobs:
           cache-to: type=gha,mode=max
           secrets: |
             git_auth_token=${{ secrets.PRIVATE_REPO_TOKEN }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Portainer redeploy
+        run: curl -X POST "${{ secrets.PORTAINER_WEBHOOK }}"

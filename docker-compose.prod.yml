@@ -1,6 +1,7 @@
 services:
   postgres:
     image: ghcr.io/hexze/coral/coral-postgres:latest
+    pull_policy: always
     container_name: coral-postgres
     restart: unless-stopped
     environment:
@@ -35,6 +36,7 @@ services:
 
   coral-api:
     image: ghcr.io/hexze/coral/coral-api:latest
+    pull_policy: always
     container_name: coral-api
     restart: unless-stopped
     depends_on:
@@ -66,6 +68,7 @@ services:
 
   coral-bot:
     image: ghcr.io/hexze/coral/coral-bot:latest
+    pull_policy: always
     container_name: coral-bot
     restart: unless-stopped
     depends_on:
