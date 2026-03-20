@@ -43,6 +43,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     curl \
+    mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/coral-api /usr/local/bin/
@@ -58,6 +59,7 @@ FROM debian:bookworm-slim AS coral-bot
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/coral-bot /usr/local/bin/
