@@ -25,6 +25,7 @@ COPY crates/coral-api ./crates/coral-api
 COPY crates/coral-bot ./crates/coral-bot
 COPY crates/coral-admin ./crates/coral-admin
 COPY crates/migration ./crates/migration
+COPY migrations ./migrations
 
 # Build all binaries (GIT_AUTH_TOKEN allows cargo to clone private deps)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
