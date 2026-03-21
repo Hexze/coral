@@ -1,0 +1,23 @@
+[package]
+name = "mc-verify"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+base64 = "0.22"
+
+# Crypto
+rsa = "0.9"
+aes = "0.8"
+sha1 = "0.10"
+rand = "0.8"

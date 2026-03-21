@@ -14,6 +14,8 @@ use clients::SkinProvider;
 use coral_redis::EventPublisher;
 use database::{Database, Member};
 
+use mc_verify::VerifyHandle;
+
 use crate::api::CoralApiClient;
 use crate::commands;
 use crate::commands::blacklist::tag::PendingOverwrite;
@@ -91,7 +93,7 @@ pub struct Data {
     pub bedwars_images: Arc<Mutex<HashMap<String, BedwarsCache>>>,
     pub session_images: Arc<Mutex<HashMap<String, SessionCache>>>,
     pub pending_overwrites: Arc<Mutex<HashMap<String, PendingOverwrite>>>,
-    pub register_cooldowns: Arc<Mutex<HashMap<UserId, Instant>>>,
+    pub verify_handle: VerifyHandle,
     pub sync_cooldowns: Arc<Mutex<HashMap<UserId, Instant>>>,
 }
 
@@ -104,6 +106,7 @@ impl Data {
 fn strip_panel_prefix(id: &str) -> Option<&str> {
     id.strip_prefix("manage_")
         .or_else(|| id.strip_prefix("dashboard_"))
+        .or_else(|| id.strip_prefix("link_"))
 }
 
 pub struct Handler {
@@ -121,8 +124,8 @@ impl Handler {
             commands::stats::bedwars::register(),
             commands::stats::prestiges::register(),
             commands::stats::session::register(),
-            commands::user::register::register(),
-            commands::user::unregister::register(),
+            commands::user::link::register(),
+            commands::user::unlink::register(),
             commands::user::dashboard::register(),
             commands::admin::info::register(),
             commands::admin::ban::register(),
@@ -155,8 +158,8 @@ impl Handler {
             "bedwars" => commands::stats::bedwars::run(ctx, command, &self.data).await,
             "prestiges" => commands::stats::prestiges::run(ctx, command, &self.data).await,
             "session" => commands::stats::session::run(ctx, command, &self.data).await,
-            "register" => commands::user::register::run(ctx, command, &self.data).await,
-            "unregister" => commands::user::unregister::run(ctx, command, &self.data).await,
+            "link" => commands::user::link::run(ctx, command, &self.data).await,
+            "unlink" => commands::user::unlink::run(ctx, command, &self.data).await,
             "dashboard" => commands::user::dashboard::run(ctx, command, &self.data).await,
             "info" => commands::admin::info::run(ctx, command, &self.data).await,
             "ban" => commands::admin::ban::run(ctx, command, &self.data).await,
@@ -174,6 +177,7 @@ impl Handler {
         component: &ComponentInteraction,
     ) -> anyhow::Result<()> {
         let id = component.data.custom_id.as_str();
+        tracing::debug!("component interaction: {id}");
 
         if let Some(action) = strip_panel_prefix(id) {
             return match action {
@@ -181,8 +185,19 @@ impl Handler {
                     commands::admin::accounts_panel::handle_swap_primary(ctx, component, &self.data)
                         .await
                 }
+                _ if action.starts_with("link_new:") => {
+                    commands::admin::accounts_panel::handle_link_new(ctx, component, &self.data)
+                        .await
+                }
+                _ if action.starts_with("link_pick:") => {
+                    commands::admin::accounts_panel::handle_link_pick(ctx, component, &self.data)
+                        .await
+                }
                 _ if action.starts_with("add_account:") => {
                     commands::admin::accounts_panel::handle_add_account_button(ctx, component).await
+                }
+                _ if action.starts_with("add_code:") => {
+                    commands::admin::accounts_panel::handle_add_code_button(ctx, component).await
                 }
                 _ if action.starts_with("remove_account:") => {
                     commands::admin::accounts_panel::handle_remove_account(
@@ -197,6 +212,12 @@ impl Handler {
                 _ if action.starts_with("cancel_add:") => {
                     commands::admin::accounts_panel::handle_cancel_add(ctx, component, &self.data)
                         .await
+                }
+                _ if action.starts_with("accounts_back:") => {
+                    commands::admin::accounts_panel::handle_accounts_back_generic(
+                        ctx, component, &self.data,
+                    )
+                    .await
                 }
                 _ => self.handle_component_direct(ctx, component, id).await,
             };
@@ -219,6 +240,9 @@ impl Handler {
                 commands::user::dashboard::handle_confirm_regenerate_key(ctx, component, &self.data)
                     .await
             }
+            "setup_link" => {
+                commands::admin::setup::handle_link_button(ctx, component, &self.data).await
+            }
             _ if id.starts_with("dashboard_accounts_back:") => {
                 commands::admin::accounts_panel::handle_dashboard_accounts_back(
                     ctx, component, &self.data,
@@ -230,10 +254,6 @@ impl Handler {
                     ctx, component, &self.data,
                 )
                 .await
-            }
-            "link" => commands::user::register::handle_link_button(ctx, component).await,
-            _ if id.starts_with("register_retry:") => {
-                commands::user::register::handle_retry_button(ctx, component, &self.data).await
             }
             "bedwars_mode" => {
                 commands::stats::bedwars::handle_mode_switch(ctx, component, &self.data).await
@@ -415,7 +435,10 @@ impl Handler {
             _ if id.starts_with("setup_cancel:") => {
                 commands::admin::setup::handle_cancel_button(ctx, component, &self.data).await
             }
-            _ => Ok(()),
+            _ => {
+                tracing::warn!("unhandled component interaction: {id}");
+                Ok(())
+            }
         }
     }
 
@@ -423,10 +446,6 @@ impl Handler {
         let id = modal.data.custom_id.as_str();
 
         match id {
-            "link_modal" => {
-                commands::user::register::handle_link_modal(ctx, modal, &self.data).await
-            }
-
             _ if id.starts_with("session_rename_modal:") => {
                 commands::stats::session::handle_rename_modal(ctx, modal, &self.data).await
             }
@@ -457,6 +476,9 @@ impl Handler {
             _ if strip_panel_prefix(id).is_some_and(|a| a.starts_with("add_account_modal:")) => {
                 commands::admin::accounts_panel::handle_add_account_modal(ctx, modal, &self.data)
                     .await
+            }
+            _ if strip_panel_prefix(id).is_some_and(|a| a.starts_with("add_code_modal:")) => {
+                commands::admin::accounts_panel::handle_add_code_modal(ctx, modal, &self.data).await
             }
             _ if id.starts_with("tag_edit_reason_modal:") => {
                 commands::blacklist::tag::handle_edit_reason_modal(ctx, modal, &self.data).await
@@ -518,7 +540,7 @@ impl EventHandler for Handler {
             }
             FullEvent::GuildMemberAddition { new_member, .. } => {
                 if let Err(e) =
-                    commands::user::register::handle_guild_join(ctx, new_member, &self.data).await
+                    commands::user::link::handle_guild_join(ctx, new_member, &self.data).await
                 {
                     tracing::error!("Guild join handler error: {}", e);
                 }

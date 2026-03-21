@@ -7,8 +7,8 @@ use database::{AccountRepository, MemberRepository};
 use crate::framework::Data;
 
 pub enum LinkCheck {
-    Verified { uuid: String, username: String },
-    NotVerified { uuid: String },
+    Verified { uuid: String },
+    NotVerified,
     PlayerNotFound,
     HypixelNotFound,
 }
@@ -23,19 +23,10 @@ pub async fn check_link(data: &Data, player: &str, discord_username: &str) -> Li
         return LinkCheck::HypixelNotFound;
     };
 
-    let username = hypixel_data
-        .get("displayname")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&stats.username)
-        .to_string();
-
     if is_discord_linked(&hypixel_data, discord_username) {
-        LinkCheck::Verified {
-            uuid: stats.uuid,
-            username,
-        }
+        LinkCheck::Verified { uuid: stats.uuid }
     } else {
-        LinkCheck::NotVerified { uuid: stats.uuid }
+        LinkCheck::NotVerified
     }
 }
 

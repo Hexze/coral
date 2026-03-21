@@ -22,6 +22,7 @@ COPY crates/database ./crates/database
 COPY crates/coral-redis ./crates/coral-redis
 COPY crates/render ./crates/render
 COPY crates/coral-api ./crates/coral-api
+COPY crates/mc-verify ./crates/mc-verify
 COPY crates/coral-bot ./crates/coral-bot
 COPY crates/coral-admin ./crates/coral-admin
 COPY crates/migration ./crates/migration

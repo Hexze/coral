@@ -122,6 +122,27 @@ impl<'a> CacheRepository<'a> {
         Ok(row.map(|r| r.0))
     }
 
+    pub async fn find_by_discord_username(
+        &self,
+        discord_username: &str,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT ON (uuid) uuid, username
+            FROM player_snapshots
+            WHERE is_baseline = true
+              AND username IS NOT NULL
+              AND LOWER(data->'socialMedia'->'links'->>'DISCORD') = LOWER($1)
+            ORDER BY uuid, timestamp DESC
+            "#,
+        )
+        .bind(discord_username)
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
     pub async fn get_username(&self, uuid: &str) -> Result<Option<String>, sqlx::Error> {
         let row: Option<(Option<String>,)> = sqlx::query_as(
             r#"

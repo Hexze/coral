@@ -49,7 +49,9 @@ async fn init_state() -> Result<AppState> {
     let internal_api_key = env::var("INTERNAL_API_KEY").ok();
 
     let db = Database::connect(&database_url).await?;
-    db.migrate().await?;
+    if let Err(e) = db.migrate().await {
+        tracing::warn!("Migration skipped: {e}");
+    }
     let redis = RedisPool::connect(&redis_url).await?;
     let hypixel = HypixelClient::new(hypixel_keys)?;
     let mojang = MojangClient::new();

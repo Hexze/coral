@@ -2,7 +2,7 @@
 -- Initial migration
 
 -- Members table (users, API keys, access levels)
-CREATE TABLE members (
+CREATE TABLE IF NOT EXISTS members (
     id BIGSERIAL PRIMARY KEY,
     discord_id BIGINT NOT NULL UNIQUE,
     uuid VARCHAR(32),
@@ -26,11 +26,11 @@ CREATE TABLE members (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_members_uuid ON members(uuid) WHERE uuid IS NOT NULL;
-CREATE INDEX idx_members_api_key ON members(api_key) WHERE api_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_members_uuid ON members(uuid) WHERE uuid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_members_api_key ON members(api_key) WHERE api_key IS NOT NULL;
 
 -- Blacklisted players
-CREATE TABLE blacklist_players (
+CREATE TABLE IF NOT EXISTS blacklist_players (
     id BIGSERIAL PRIMARY KEY,
     uuid VARCHAR(32) NOT NULL UNIQUE,
     is_locked BOOLEAN NOT NULL DEFAULT FALSE,
@@ -41,10 +41,10 @@ CREATE TABLE blacklist_players (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_blacklist_uuid ON blacklist_players(uuid);
+CREATE INDEX IF NOT EXISTS idx_blacklist_uuid ON blacklist_players(uuid);
 
 -- Player tags (normalized from embedded array)
-CREATE TABLE player_tags (
+CREATE TABLE IF NOT EXISTS player_tags (
     id BIGSERIAL PRIMARY KEY,
     player_id BIGINT NOT NULL REFERENCES blacklist_players(id) ON DELETE CASCADE,
     tag_type VARCHAR(32) NOT NULL,
@@ -56,13 +56,13 @@ CREATE TABLE player_tags (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_player_tags_player ON player_tags(player_id);
-CREATE INDEX idx_player_tags_added_by ON player_tags(added_by);
-CREATE INDEX idx_player_tags_added_on ON player_tags(added_on);
+CREATE INDEX IF NOT EXISTS idx_player_tags_player ON player_tags(player_id);
+CREATE INDEX IF NOT EXISTS idx_player_tags_added_by ON player_tags(added_by);
+CREATE INDEX IF NOT EXISTS idx_player_tags_added_on ON player_tags(added_on);
 
 -- Player snapshots (stats cache with smart compression)
 -- We store full snapshots periodically, and deltas between them
-CREATE TABLE player_snapshots (
+CREATE TABLE IF NOT EXISTS player_snapshots (
     id BIGSERIAL PRIMARY KEY,
     uuid VARCHAR(32) NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -78,12 +78,12 @@ CREATE TABLE player_snapshots (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_snapshots_uuid ON player_snapshots(uuid);
-CREATE INDEX idx_snapshots_uuid_timestamp ON player_snapshots(uuid, timestamp DESC);
-CREATE INDEX idx_snapshots_timestamp ON player_snapshots(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_uuid ON player_snapshots(uuid);
+CREATE INDEX IF NOT EXISTS idx_snapshots_uuid_timestamp ON player_snapshots(uuid, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON player_snapshots(timestamp DESC);
 
 -- Rate limiting
-CREATE TABLE rate_limits (
+CREATE TABLE IF NOT EXISTS rate_limits (
     id BIGSERIAL PRIMARY KEY,
     api_key VARCHAR(64) NOT NULL UNIQUE,
     requests TIMESTAMPTZ[] NOT NULL DEFAULT '{}',
@@ -91,7 +91,7 @@ CREATE TABLE rate_limits (
 );
 
 -- IP history for API keys
-CREATE TABLE api_key_ips (
+CREATE TABLE IF NOT EXISTS api_key_ips (
     id BIGSERIAL PRIMARY KEY,
     member_id BIGINT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     ip_address INET NOT NULL,
@@ -101,10 +101,10 @@ CREATE TABLE api_key_ips (
     UNIQUE(member_id, ip_address)
 );
 
-CREATE INDEX idx_api_key_ips_member ON api_key_ips(member_id);
+CREATE INDEX IF NOT EXISTS idx_api_key_ips_member ON api_key_ips(member_id);
 
 -- Minecraft alt accounts
-CREATE TABLE minecraft_accounts (
+CREATE TABLE IF NOT EXISTS minecraft_accounts (
     id BIGSERIAL PRIMARY KEY,
     member_id BIGINT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     uuid VARCHAR(32) NOT NULL,
@@ -113,8 +113,8 @@ CREATE TABLE minecraft_accounts (
     UNIQUE(member_id, uuid)
 );
 
-CREATE INDEX idx_minecraft_accounts_member ON minecraft_accounts(member_id);
-CREATE INDEX idx_minecraft_accounts_uuid ON minecraft_accounts(uuid);
+CREATE INDEX IF NOT EXISTS idx_minecraft_accounts_member ON minecraft_accounts(member_id);
+CREATE INDEX IF NOT EXISTS idx_minecraft_accounts_uuid ON minecraft_accounts(uuid);
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -126,10 +126,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Apply updated_at triggers
+DROP TRIGGER IF EXISTS members_updated_at ON members;
 CREATE TRIGGER members_updated_at
     BEFORE UPDATE ON members
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS blacklist_players_updated_at ON blacklist_players;
 CREATE TRIGGER blacklist_players_updated_at
     BEFORE UPDATE ON blacklist_players
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();

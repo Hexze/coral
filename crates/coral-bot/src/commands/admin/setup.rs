@@ -346,15 +346,48 @@ fn post_link_embed_container() -> CreateComponent<'static> {
         text(
             "## Account Linking\n\n\
                  Link your Minecraft account to get roles and a nickname in this server.\n\n\
-                 Your Discord username must be set in your Hypixel social media settings.",
+                 Use the `/link` command or the button below to get started.",
         ),
         separator(),
         CreateContainerComponent::ActionRow(CreateActionRow::buttons(vec![
-            CreateButton::new("link")
+            CreateButton::new("setup_link")
                 .label("Link Account")
                 .style(ButtonStyle::Primary),
         ])),
     ]))
+}
+
+pub async fn handle_link_button(
+    ctx: &Context,
+    component: &ComponentInteraction,
+    data: &Data,
+) -> Result<()> {
+    let discord_id = component.user.id.get();
+    let repo = MemberRepository::new(data.db.pool());
+
+    if repo.get_by_discord_id(discord_id as i64).await?.is_none() {
+        repo.create(discord_id as i64).await?;
+    }
+
+    let components = crate::commands::admin::accounts_panel::build_accounts_for_self(
+        data,
+        discord_id,
+        &component.user.name,
+    )
+    .await?;
+
+    component
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .flags(MessageFlags::IS_COMPONENTS_V2 | MessageFlags::EPHEMERAL)
+                    .components(components),
+            ),
+        )
+        .await?;
+
+    Ok(())
 }
 
 pub async fn handle_cancel_button(
@@ -394,7 +427,9 @@ pub async fn handle_link_role_select(
 
     let repo = GuildConfigRepository::new(data.db.pool());
     let old_config = repo.get(guild_id as i64).await?;
-    let old_role = old_config.and_then(|c| c.link_role_id).map(|r| RoleId::new(r as u64));
+    let old_role = old_config
+        .and_then(|c| c.link_role_id)
+        .map(|r| RoleId::new(r as u64));
     let new_role = role_id;
 
     repo.set_link_role(guild_id as i64, role_id.map(|r| r.get() as i64))
@@ -405,9 +440,14 @@ pub async fn handle_link_role_select(
         let data_clone = data.clone();
         tokio::spawn(async move {
             crate::sync::swap_role(
-                ctx_clone.clone(), data_clone.clone(), GuildId::new(guild_id),
-                old_role, new_role, crate::sync::RoleConfigField::Link,
-            ).await;
+                ctx_clone.clone(),
+                data_clone.clone(),
+                GuildId::new(guild_id),
+                old_role,
+                new_role,
+                crate::sync::RoleConfigField::Link,
+            )
+            .await;
             crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id)).await;
         });
     } else {
@@ -444,7 +484,9 @@ pub async fn handle_unlinked_role_select(
 
     let repo = GuildConfigRepository::new(data.db.pool());
     let old_config = repo.get(guild_id as i64).await?;
-    let old_role = old_config.and_then(|c| c.unlinked_role_id).map(|r| RoleId::new(r as u64));
+    let old_role = old_config
+        .and_then(|c| c.unlinked_role_id)
+        .map(|r| RoleId::new(r as u64));
     let new_role = role_id;
 
     repo.set_unlinked_role(guild_id as i64, role_id.map(|r| r.get() as i64))
@@ -455,9 +497,14 @@ pub async fn handle_unlinked_role_select(
         let data_clone = data.clone();
         tokio::spawn(async move {
             crate::sync::swap_role(
-                ctx_clone.clone(), data_clone.clone(), GuildId::new(guild_id),
-                old_role, new_role, crate::sync::RoleConfigField::Unlinked,
-            ).await;
+                ctx_clone.clone(),
+                data_clone.clone(),
+                GuildId::new(guild_id),
+                old_role,
+                new_role,
+                crate::sync::RoleConfigField::Unlinked,
+            )
+            .await;
             crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id)).await;
         });
     } else {
@@ -996,7 +1043,11 @@ pub async fn handle_nickname_reset_button(
 
     let ctx_clone = ctx.clone();
     let data_clone = data.clone();
-    tokio::spawn(crate::sync::clear_nicknames(ctx_clone, data_clone, GuildId::new(guild_id)));
+    tokio::spawn(crate::sync::clear_nicknames(
+        ctx_clone,
+        data_clone,
+        GuildId::new(guild_id),
+    ));
 
     Ok(())
 }

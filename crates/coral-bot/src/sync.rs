@@ -454,7 +454,9 @@ pub(crate) async fn sync_member(
         edit = edit.nickname(nick);
     }
 
-    guild_id.edit_member(&ctx.http, member.user.id, edit).await?;
+    guild_id
+        .edit_member(&ctx.http, member.user.id, edit)
+        .await?;
     Ok(true)
 }
 
@@ -509,7 +511,11 @@ async fn try_clear_nicknames(ctx: &Context, data: &Data, guild_id: GuildId) -> R
         let config = GuildConfigRepository::new(data.db.pool())
             .get(guild_id.get() as i64)
             .await?;
-        if config.as_ref().and_then(|c| c.nickname_template.as_ref()).is_some() {
+        if config
+            .as_ref()
+            .and_then(|c| c.nickname_template.as_ref())
+            .is_some()
+        {
             tracing::info!("Nickname reset cancelled — new template set in {guild_id}");
             return Ok(());
         }

@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 use clients::{LocalSkinProvider, SkinProvider};
 use coral_redis::{EventPublisher, RedisPool};
 use database::Database;
+use mc_verify::VerifyServer;
 
 mod accounts;
 mod api;
@@ -63,6 +64,20 @@ async fn init_data() -> Result<Data> {
     let skin_provider: Arc<dyn SkinProvider> =
         Arc::new(LocalSkinProvider::new().expect("Failed to initialize skin renderer"));
 
+    let verify_addr =
+        env::var("VERIFY_SERVER_ADDRESS").unwrap_or_else(|_| "0.0.0.0:25565".to_string());
+    let verify_handle = VerifyServer::new(&verify_addr)
+        .disconnect_message(|code| {
+            format!(
+                "Your verification code is: §a§l{code}\n\n\
+                 §rUse §f/link §ror §f/dashboard §rin Discord to enter this code.\n\
+                 §7Expires in 2 minutes."
+            )
+        })
+        .start()
+        .await
+        .expect("Failed to start verify server");
+
     Ok(Data {
         db: Arc::new(db),
         api: Arc::new(api),
@@ -77,7 +92,7 @@ async fn init_data() -> Result<Data> {
         bedwars_images: Arc::new(Mutex::new(HashMap::new())),
         session_images: Arc::new(Mutex::new(HashMap::new())),
         pending_overwrites: Arc::new(Mutex::new(HashMap::new())),
-        register_cooldowns: Arc::new(Mutex::new(HashMap::new())),
+        verify_handle,
         sync_cooldowns: Arc::new(Mutex::new(HashMap::new())),
     })
 }

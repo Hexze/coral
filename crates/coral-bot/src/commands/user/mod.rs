@@ -1,3 +1,3 @@
 pub mod dashboard;
-pub mod register;
-pub mod unregister;
+pub mod link;
+pub mod unlink;
