@@ -22,7 +22,7 @@ impl CodeStore {
     }
 
     pub async fn insert(&self, uuid: Uuid, username: String) -> String {
-        let url = format!("{}/v1/verify/codes", self.api_url);
+        let url = format!("{}/v3/verify/codes", self.api_url);
 
         for _ in 0..MAX_ATTEMPTS {
             let code = generate_code();

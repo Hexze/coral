@@ -19,7 +19,7 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(
     get,
-    path = "/v1/resolve/{identifier}",
+    path = "/v3/resolve/{identifier}",
     params(
         ("identifier" = String, Path, description = "Player UUID or username")
     ),

@@ -27,7 +27,7 @@ pub fn internal_router() -> Router<AppState> {
 
 #[utoipa::path(
     get,
-    path = "/v1/player/tags/{identifier}",
+    path = "/v3/player/tags/{identifier}",
     params(
         ("identifier" = String, Path, description = "Player UUID or username")
     ),
@@ -63,7 +63,7 @@ pub async fn player_tags(
 
 #[utoipa::path(
     get,
-    path = "/v1/player/stats/{identifier}",
+    path = "/v3/player/stats/{identifier}",
     params(
         ("identifier" = String, Path, description = "Player UUID or username")
     ),
@@ -132,7 +132,7 @@ pub async fn player_stats(
 
 #[utoipa::path(
     get,
-    path = "/v1/player/skin/{identifier}",
+    path = "/v3/player/skin/{identifier}",
     params(
         ("identifier" = String, Path, description = "Player UUID or username")
     ),

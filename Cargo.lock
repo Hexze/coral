@@ -679,6 +679,7 @@ dependencies = [
  "hypixel",
  "image",
  "redis",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

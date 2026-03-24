@@ -28,7 +28,7 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(
     post,
-    path = "/v1/verify/codes",
+    path = "/v3/verify/codes",
     request_body = StoreCodeRequest,
     responses(
         (status = 201, description = "Code stored"),
@@ -58,7 +58,7 @@ pub async fn store_code(
 
 #[utoipa::path(
     delete,
-    path = "/v1/verify/codes/{code}",
+    path = "/v3/verify/codes/{code}",
     params(
         ("code" = String, Path, description = "Verification code")
     ),

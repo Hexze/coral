@@ -563,6 +563,7 @@ impl EventHandler for Handler {
                 self.data
                     .active_interactions
                     .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
             }
             FullEvent::GuildMemberAddition { new_member, .. } => {
                 if let Err(e) =

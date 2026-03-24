@@ -1,6 +1,7 @@
 use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use chrono::Utc;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
@@ -15,25 +16,20 @@ use crate::state::AppState;
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub(crate) struct CubelifyQuery {
-    pub id: String,
+    pub uuid: String,
     pub key: String,
-    #[allow(dead_code)]
-    pub name: String,
-    #[allow(dead_code)]
-    pub sources: String,
+    pub name: Option<String>,
+    pub sources: Option<String>,
 }
 
 pub fn router(_state: AppState) -> Router<AppState> {
-    Router::new().route("/cubelify/{uuid}", get(get_cubelify))
+    Router::new().route("/cubelify", get(get_cubelify))
 }
 
 #[utoipa::path(
     get,
-    path = "/v1/cubelify/{uuid}",
-    params(
-        ("uuid" = String, Path, description = "Player UUID"),
-        CubelifyQuery
-    ),
+    path = "/v3/cubelify",
+    params(CubelifyQuery),
     responses(
         (status = 200, description = "Cubelify data", body = CubelifyResponse),
     ),
@@ -54,12 +50,12 @@ async fn process_cubelify(
     let member = validate_api_key(state, &query.key).await?;
     check_rate_limit(state, &query.key, &member).await?;
 
-    let uuid = normalize_uuid(&query.id);
+    let uuid = normalize_uuid(&query.uuid);
 
     refresh_player_cache(state, &uuid, None).await;
 
     let tags = fetch_player_tags(state, &uuid).await?;
-    Ok(build_cubelify_response(&tags))
+    Ok(build_cubelify_response(state, &tags).await)
 }
 
 async fn validate_api_key(state: &AppState, api_key: &str) -> Result<Member, CubelifyResponse> {
@@ -115,7 +111,7 @@ async fn fetch_player_tags(
         .map_err(|_| CubelifyResponse::error("Internal Error", "mdi-alert-circle"))
 }
 
-fn build_cubelify_response(tags: &[PlayerTagRow]) -> CubelifyResponse {
+async fn build_cubelify_response(state: &AppState, tags: &[PlayerTagRow]) -> CubelifyResponse {
     let mut cubelify_tags = Vec::new();
     let mut total_score = 0.0;
 
@@ -124,7 +120,7 @@ fn build_cubelify_response(tags: &[PlayerTagRow]) -> CubelifyResponse {
             cubelify_tags.push(CubelifyTag {
                 icon: def.icon.to_string(),
                 color: def.color,
-                tooltip: build_tooltip(def.name, &tag.reason),
+                tooltip: build_tooltip(state, def.name, tag).await,
                 text: None,
             });
             total_score += def.score;
@@ -140,12 +136,49 @@ fn build_cubelify_response(tags: &[PlayerTagRow]) -> CubelifyResponse {
     }
 }
 
-fn build_tooltip(tag_name: &str, reason: &str) -> String {
-    if reason.is_empty() {
-        capitalize(tag_name)
+async fn build_tooltip(state: &AppState, tag_name: &str, tag: &PlayerTagRow) -> String {
+    let name = capitalize(tag_name);
+    let time_ago = relative_time(tag.added_on);
+
+    let mut tooltip = if tag.hide_username {
+        format!("{name} (Added {time_ago})")
     } else {
-        format!("{}: {}", capitalize(tag_name), reason)
+        let added_by = state
+            .discord
+            .resolve_username(tag.added_by as u64)
+            .await
+            .unwrap_or_else(|| "Unknown".to_string());
+        format!("{name} (Added by {added_by} {time_ago})")
+    };
+
+    if !tag.reason.is_empty() {
+        tooltip.push_str(&format!("\n- {}", tag.reason));
     }
+
+    tooltip
+}
+
+fn relative_time(timestamp: chrono::DateTime<Utc>) -> String {
+    let delta = Utc::now() - timestamp;
+    let seconds = delta.num_seconds();
+
+    if seconds < 60 {
+        return "just now".to_string();
+    }
+
+    let (value, unit) = if seconds < 3600 {
+        (seconds / 60, "min")
+    } else if seconds < 86400 {
+        (seconds / 3600, "hr")
+    } else if seconds < 2_592_000 {
+        (seconds / 86400, "d")
+    } else if seconds < 31_536_000 {
+        (seconds / 2_592_000, "mon")
+    } else {
+        (seconds / 31_536_000, "yr")
+    };
+
+    format!("{value}{unit} ago")
 }
 
 fn capitalize(s: &str) -> String {

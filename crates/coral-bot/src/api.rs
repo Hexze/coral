@@ -82,7 +82,7 @@ impl CoralApiClient {
         &self,
         identifier: &str,
     ) -> Result<PlayerStatsResponse, ApiError> {
-        let url = format!("{}/v1/player/stats/{}", self.base_url, identifier);
+        let url = format!("{}/v3/player/stats/{}", self.base_url, identifier);
         self.get(&url).await
     }
 
@@ -92,19 +92,19 @@ impl CoralApiClient {
         by: Option<&str>,
     ) -> Result<Option<GuildResponse>, ApiError> {
         let url = match by {
-            Some(by) => format!("{}/v1/guild/{}?by={}", self.base_url, identifier, by),
-            None => format!("{}/v1/guild/{}", self.base_url, identifier),
+            Some(by) => format!("{}/v3/guild/{}?by={}", self.base_url, identifier, by),
+            None => format!("{}/v3/guild/{}", self.base_url, identifier),
         };
         self.get(&url).await
     }
 
     pub async fn resolve(&self, identifier: &str) -> Result<ResolveResponse, ApiError> {
-        let url = format!("{}/v1/resolve/{}", self.base_url, identifier);
+        let url = format!("{}/v3/resolve/{}", self.base_url, identifier);
         self.get(&url).await
     }
 
     pub async fn redeem_verify_code(&self, code: &str) -> Result<ResolveResponse, ApiError> {
-        let url = format!("{}/v1/verify/codes/{}", self.base_url, code);
+        let url = format!("{}/v3/verify/codes/{}", self.base_url, code);
         let response = self
             .http
             .delete(&url)

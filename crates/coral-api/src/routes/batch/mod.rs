@@ -31,7 +31,7 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(
     post,
-    path = "/v1/players",
+    path = "/v3/players",
     request_body = BatchRequest,
     responses(
         (status = 200, description = "Batch lookup completed", body = BatchResponse),

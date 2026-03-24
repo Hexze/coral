@@ -19,6 +19,7 @@ use database::Database;
 
 mod auth;
 mod cache;
+mod discord;
 mod error;
 mod middleware;
 mod openapi;
@@ -69,6 +70,8 @@ async fn init_state() -> Result<AppState> {
         }
     };
 
+    let discord_token = env::var("DISCORD_TOKEN").ok();
+
     Ok(AppState::new(
         db,
         hypixel,
@@ -76,6 +79,7 @@ async fn init_state() -> Result<AppState> {
         skin_provider,
         internal_api_key,
         redis,
+        discord_token,
     ))
 }
 
@@ -91,7 +95,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .merge(Scalar::with_url("/docs", openapi::ApiDoc::openapi()))
-        .nest("/v1", routes::router(state.clone()))
+        .nest("/v3", routes::router(state.clone()))
         .with_state(state)
 }
 

@@ -51,7 +51,7 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(
     get,
-    path = "/v1/guild/{identifier}",
+    path = "/v3/guild/{identifier}",
     params(
         ("identifier" = String, Path, description = "Guild name or player UUID/username"),
         GuildQuery

@@ -83,7 +83,7 @@ pub fn mod_router() -> Router<AppState> {
 
 #[utoipa::path(
     post,
-    path = "/v1/tags",
+    path = "/v3/tags",
     request_body = AddTagRequest,
     responses(
         (status = 200, description = "Tag added", body = TagIdResponse),
@@ -159,7 +159,7 @@ pub async fn add_tag(
 
 #[utoipa::path(
     delete,
-    path = "/v1/tags/{uuid}/{tag_id}",
+    path = "/v3/tags/{uuid}/{tag_id}",
     params(
         ("uuid" = String, Path, description = "Player UUID"),
         ("tag_id" = i64, Path, description = "Tag ID to remove")
@@ -222,7 +222,7 @@ pub async fn remove_tag(
 
 #[utoipa::path(
     patch,
-    path = "/v1/tags/{uuid}/{tag_id}",
+    path = "/v3/tags/{uuid}/{tag_id}",
     params(
         ("uuid" = String, Path, description = "Player UUID"),
         ("tag_id" = i64, Path, description = "Tag ID to update")
@@ -321,7 +321,7 @@ pub async fn overwrite_tag(
 
 #[utoipa::path(
     post,
-    path = "/v1/player/lock/{uuid}",
+    path = "/v3/player/lock/{uuid}",
     params(
         ("uuid" = String, Path, description = "Player UUID to lock")
     ),
@@ -375,7 +375,7 @@ pub async fn lock_player(
 
 #[utoipa::path(
     delete,
-    path = "/v1/player/lock/{uuid}",
+    path = "/v3/player/lock/{uuid}",
     params(
         ("uuid" = String, Path, description = "Player UUID to unlock")
     ),

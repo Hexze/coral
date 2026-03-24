@@ -54,6 +54,7 @@ services:
       REDIS_URL: redis://coral-redis:6379
       HYPIXEL_API_KEYS: ${HYPIXEL_API_KEYS:?HYPIXEL_API_KEYS required}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY required}
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-}
       PORT: ${API_PORT:-8000}
       RUST_LOG: ${RUST_LOG:-info}
     healthcheck:
