@@ -55,10 +55,7 @@ pub(crate) struct TagIdResponse {
     pub id: i64,
 }
 
-#[derive(Serialize, ToSchema)]
-pub(crate) struct SuccessResponse {
-    pub success: bool,
-}
+pub(crate) use crate::responses::SuccessResponse;
 
 
 pub fn router() -> Router<AppState> {

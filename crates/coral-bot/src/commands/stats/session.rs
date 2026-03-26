@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Utc};
 use hypixel::parsing::bedwars::{GuildInfo, Stats};
 use hypixel::{Mode, experience_for_level, extract_bedwars_stats};
 use image::DynamicImage;
 use serenity::all::*;
 use tracing::debug;
 
-use database::{AccountRepository, CacheRepository, MemberRepository, SessionMarker, SessionRepository};
+use database::{AccountRepository, CacheRepository, MemberRepository, Period, SessionMarker, SessionRepository};
 use render::TagIcon;
 
 use crate::framework::Data;
@@ -54,67 +54,12 @@ struct SessionRenderData {
 }
 
 
-#[derive(Clone, Copy)]
-enum Period {
-    Daily,
-    Weekly,
-    Monthly,
-    Yearly,
-}
-
-impl Period {
-    fn duration(&self) -> Duration {
-        match self {
-            Period::Daily => Duration::hours(24),
-            Period::Weekly => Duration::days(7),
-            Period::Monthly => Duration::days(30),
-            Period::Yearly => Duration::days(365),
-        }
-    }
-
-    fn staleness(&self) -> Duration {
-        match self {
-            Period::Daily => Duration::hours(1),
-            Period::Weekly => Duration::hours(12),
-            Period::Monthly => Duration::days(1),
-            Period::Yearly => Duration::days(7),
-        }
-    }
-
-    fn to_session_type(self) -> SessionType {
-        match self {
-            Period::Daily => SessionType::Daily,
-            Period::Weekly => SessionType::Weekly,
-            Period::Monthly => SessionType::Monthly,
-            Period::Yearly => SessionType::Yearly,
-        }
-    }
-
-    fn key(&self) -> &'static str {
-        match self {
-            Period::Daily => "daily",
-            Period::Weekly => "weekly",
-            Period::Monthly => "monthly",
-            Period::Yearly => "yearly",
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            Period::Daily => "Daily",
-            Period::Weekly => "Weekly",
-            Period::Monthly => "Monthly",
-            Period::Yearly => "Yearly",
-        }
-    }
-
-    fn fixed_preset(&self) -> Option<(&'static str, &'static str)> {
-        match self {
-            Period::Daily => Some(("past_24h", "Past 24 Hours")),
-            Period::Weekly => Some(("past_7d", "Past 7 Days")),
-            Period::Monthly => Some(("past_30d", "Past 30 Days")),
-            Period::Yearly => None,
-        }
+fn period_session_type(period: Period) -> SessionType {
+    match period {
+        Period::Daily => SessionType::Daily,
+        Period::Weekly => SessionType::Weekly,
+        Period::Monthly => SessionType::Monthly,
+        Period::Yearly => SessionType::Yearly,
     }
 }
 
@@ -198,61 +143,6 @@ fn format_duration(duration: Duration) -> String {
     } else {
         format!("{}m", duration.num_minutes().max(1))
     }
-}
-
-
-fn is_eastern_dst(date: NaiveDate) -> bool {
-    let year = date.year();
-    let march_1 = NaiveDate::from_ymd_opt(year, 3, 1).unwrap();
-    let dow = march_1.weekday().num_days_from_sunday();
-    let spring = NaiveDate::from_ymd_opt(year, 3, 1 + (7 - dow) % 7 + 7).unwrap();
-
-    let nov_1 = NaiveDate::from_ymd_opt(year, 11, 1).unwrap();
-    let dow = nov_1.weekday().num_days_from_sunday();
-    let fall = NaiveDate::from_ymd_opt(year, 11, 1 + (7 - dow) % 7).unwrap();
-
-    date >= spring && date < fall
-}
-
-
-fn last_reset(period: Period, now: DateTime<Utc>) -> DateTime<Utc> {
-    let eastern_date = (now - Duration::hours(5)).date_naive();
-
-    let reset_utc = |date: NaiveDate| -> DateTime<Utc> {
-        let utc_hour = if is_eastern_dst(date) { 13 } else { 14 };
-        DateTime::from_naive_utc_and_offset(date.and_hms_opt(utc_hour, 30, 0).unwrap(), Utc)
-    };
-
-    let candidate = match period {
-        Period::Daily => eastern_date,
-        Period::Weekly => {
-            let dow = eastern_date.weekday().num_days_from_sunday();
-            eastern_date - Duration::days(dow as i64)
-        }
-        Period::Monthly => {
-            NaiveDate::from_ymd_opt(eastern_date.year(), eastern_date.month(), 1).unwrap()
-        }
-        Period::Yearly => NaiveDate::from_ymd_opt(eastern_date.year(), 1, 1).unwrap(),
-    };
-
-    let reset = reset_utc(candidate);
-    if now >= reset {
-        return reset;
-    }
-
-    let prev = match period {
-        Period::Daily => candidate - Duration::days(1),
-        Period::Weekly => candidate - Duration::days(7),
-        Period::Monthly => {
-            if candidate.month() == 1 {
-                NaiveDate::from_ymd_opt(candidate.year() - 1, 12, 1).unwrap()
-            } else {
-                NaiveDate::from_ymd_opt(candidate.year(), candidate.month() - 1, 1).unwrap()
-            }
-        }
-        Period::Yearly => NaiveDate::from_ymd_opt(candidate.year() - 1, 1, 1).unwrap(),
-    };
-    reset_utc(prev)
 }
 
 
@@ -376,7 +266,7 @@ fn create_session_dropdown(
     for period in PERIODS {
         let key = period.key();
         let desc = descriptions.get(key).map(|s| s.as_str()).unwrap_or("No Data");
-        let elapsed = now.signed_duration_since(last_reset(period, now));
+        let elapsed = now.signed_duration_since(period.last_reset(now));
 
         options.push(
             CreateSelectMenuOption::new(
@@ -692,7 +582,7 @@ async fn handle_create_bookmark(
     }
 
     if let Err(e) = SessionRepository::new(data.db.pool())
-        .create(&uuid, discord_id, &name, timestamp, false)
+        .create(&uuid, discord_id, &name, timestamp)
         .await
     {
         tracing::error!("Failed to create bookmark: {e}");
@@ -742,7 +632,6 @@ async fn handle_create_bookmark(
             uuid: uuid.to_string(),
             discord_id,
             name: name.to_string(),
-            pinned: false,
             snapshot_timestamp: timestamp,
             created_at: timestamp,
         });
@@ -1248,12 +1137,12 @@ async fn fetch_snapshots(
     );
 
     if markers.is_empty() {
-        if let Ok(marker) = session_repo.create(uuid, discord_id, "main", now, true).await {
+        if let Ok(marker) = session_repo.create(uuid, discord_id, "main", now).await {
             markers.push(marker);
         }
     }
 
-    let mut timestamps: Vec<DateTime<Utc>> = PERIODS.iter().map(|p| last_reset(*p, now)).collect();
+    let mut timestamps: Vec<DateTime<Utc>> = PERIODS.iter().map(|p| p.last_reset(now)).collect();
     for period in PERIODS {
         if period.fixed_preset().is_some() {
             timestamps.push(now - period.duration());
@@ -1309,13 +1198,13 @@ fn render_all_views(
     };
 
     for period in PERIODS {
-        let target_time = last_reset(period, now);
+        let target_time = period.last_reset(now);
         let snapshot = snapshot_iter.next().flatten();
         let cutoff = target_time - period.staleness();
         let in_range = snapshot.as_ref().is_some_and(|(ts, _)| *ts >= cutoff);
 
         if let Some(prev) = to_stats(snapshot.map(|(_, v)| v)).filter(|_| in_range) {
-            render_view(period.key().to_string(), &prev, period.to_session_type(), target_time);
+            render_view(period.key().to_string(), &prev, period_session_type(period), target_time);
         }
     }
 

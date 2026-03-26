@@ -29,7 +29,7 @@ pub fn internal_router() -> Router<AppState> {
 }
 
 
-async fn resolve_identifier(state: &AppState, identifier: &str) -> Result<(String, Option<String>), ApiError> {
+pub async fn resolve_identifier(state: &AppState, identifier: &str) -> Result<(String, Option<String>), ApiError> {
     if is_uuid(identifier) {
         Ok((normalize_uuid(identifier), None))
     } else {

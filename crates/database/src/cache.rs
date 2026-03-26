@@ -86,6 +86,24 @@ impl<'a> CacheRepository<'a> {
         self.get_snapshot_at(uuid, Utc::now()).await
     }
 
+    pub async fn list_snapshot_timestamps(
+        &self,
+        uuid: &str,
+        before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<(DateTime<Utc>, bool)>, sqlx::Error> {
+        sqlx::query_as::<_, (DateTime<Utc>, bool)>(
+            "SELECT timestamp, is_baseline FROM player_snapshots
+             WHERE uuid = $1 AND timestamp < $2
+             ORDER BY timestamp DESC LIMIT $3",
+        )
+        .bind(uuid)
+        .bind(before)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await
+    }
+
     pub async fn get_latest_timestamp(&self, uuid: &str) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
         sqlx::query_as::<_, (DateTime<Utc>,)>(
             "SELECT timestamp FROM player_snapshots WHERE uuid = $1

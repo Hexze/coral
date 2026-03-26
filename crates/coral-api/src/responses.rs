@@ -72,6 +72,12 @@ impl CubelifyResponse {
 }
 
 
+#[derive(Serialize, ToSchema)]
+pub struct SuccessResponse {
+    pub success: bool,
+}
+
+
 impl TagResponse {
     pub fn from_db(tag: &database::PlayerTagRow) -> Self {
         Self {

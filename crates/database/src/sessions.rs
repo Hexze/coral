@@ -8,7 +8,6 @@ pub struct SessionMarker {
     pub uuid: String,
     pub discord_id: i64,
     pub name: String,
-    pub pinned: bool,
     pub snapshot_timestamp: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
@@ -28,27 +27,25 @@ impl<'a> SessionRepository<'a> {
         discord_id: i64,
         name: &str,
         snapshot_timestamp: DateTime<Utc>,
-        pinned: bool,
     ) -> Result<SessionMarker, sqlx::Error> {
         sqlx::query_as(
-            "INSERT INTO session_markers (uuid, discord_id, name, snapshot_timestamp, pinned)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO session_markers (uuid, discord_id, name, snapshot_timestamp)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (uuid, discord_id, name) DO UPDATE
-             SET snapshot_timestamp = $4, pinned = $5, created_at = NOW()
-             RETURNING id, uuid, discord_id, name, pinned, snapshot_timestamp, created_at",
+             SET snapshot_timestamp = $4, created_at = NOW()
+             RETURNING id, uuid, discord_id, name, snapshot_timestamp, created_at",
         )
         .bind(uuid)
         .bind(discord_id)
         .bind(name)
         .bind(snapshot_timestamp)
-        .bind(pinned)
         .fetch_one(self.pool)
         .await
     }
 
     pub async fn get(&self, uuid: &str, discord_id: i64, name: &str) -> Result<Option<SessionMarker>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT id, uuid, discord_id, name, pinned, snapshot_timestamp, created_at
+            "SELECT id, uuid, discord_id, name, snapshot_timestamp, created_at
              FROM session_markers WHERE uuid = $1 AND discord_id = $2 AND name = $3",
         )
         .bind(uuid)
@@ -60,7 +57,7 @@ impl<'a> SessionRepository<'a> {
 
     pub async fn list(&self, uuid: &str, discord_id: i64) -> Result<Vec<SessionMarker>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT id, uuid, discord_id, name, pinned, snapshot_timestamp, created_at
+            "SELECT id, uuid, discord_id, name, snapshot_timestamp, created_at
              FROM session_markers WHERE uuid = $1 AND discord_id = $2
              ORDER BY created_at DESC",
         )
@@ -68,17 +65,6 @@ impl<'a> SessionRepository<'a> {
         .bind(discord_id)
         .fetch_all(self.pool)
         .await
-    }
-
-    pub async fn set_pinned(&self, uuid: &str, discord_id: i64, name: &str, pinned: bool) -> Result<bool, sqlx::Error> {
-        sqlx::query("UPDATE session_markers SET pinned = $4 WHERE uuid = $1 AND discord_id = $2 AND name = $3")
-            .bind(uuid)
-            .bind(discord_id)
-            .bind(name)
-            .bind(pinned)
-            .execute(self.pool)
-            .await
-            .map(|r| r.rows_affected() > 0)
     }
 
     pub async fn delete(&self, uuid: &str, discord_id: i64, name: &str) -> Result<bool, sqlx::Error> {
