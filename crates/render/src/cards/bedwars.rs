@@ -2,8 +2,8 @@ use image::{DynamicImage, RgbaImage};
 use mctext::{MCText, NamedColor};
 
 use hypixel::{
-    BedwarsPlayerStats, Mode, ModeStats, SlumberInfo, StreakSource, WinstreakHistory, color_code,
-    level_progress,
+    BedwarsPlayerStats, Mode, ModeStats, SlumberInfo, StreakSource, WinstreakHistory,
+    color_code, combined_mode_name, level_progress,
 };
 
 use crate::canvas::{
@@ -54,12 +54,13 @@ pub type TagIcon = (String, u32);
 
 pub fn render_bedwars(
     stats: &BedwarsPlayerStats,
-    mode: Mode,
+    modes: &[Mode],
     skin: Option<&DynamicImage>,
     winstreaks: &WinstreakHistory,
     tags: &[TagIcon],
 ) -> RgbaImage {
-    let mode_stats = stats.get_mode_stats(mode);
+    let mode_stats = stats.get_combined_mode_stats(modes);
+    let mode_label = combined_mode_name(modes);
     let mode_games = ModeGames {
         solos: stats.solos.wins + stats.solos.losses,
         doubles: stats.doubles.wins + stats.doubles.losses,
@@ -72,18 +73,20 @@ pub fn render_bedwars(
         .background(CANVAS_BACKGROUND)
         .draw(0, HEADER_Y as i32, &HeaderSection::new(stats, tags))
         .draw(0, LEVEL_Y as i32, &LevelSection::new(stats))
-        .draw(col_x(0) as i32, MAIN_ROW_Y as i32, &SkinSection::new(skin, mode, stats.network_level))
+        .draw(col_x(0) as i32, MAIN_ROW_Y as i32, &SkinSection::new(skin, &mode_label, stats.network_level))
         .draw(col_x(1) as i32, MAIN_ROW_Y as i32, &StatsSection::new(&mode_stats));
 
-    let canvas = match mode {
-        Mode::Overall => canvas.draw(
-            col_x(1) as i32, SECOND_ROW_Y as i32,
-            &VerticalGamesBox::new(&mode_games, COL_WIDTH, SECOND_ROW_HEIGHT),
-        ),
-        _ => canvas.draw(
+    let is_single_non_overall = modes.len() == 1 && modes[0] != Mode::Overall;
+    let canvas = if is_single_non_overall {
+        canvas.draw(
             col_x(1) as i32, SECOND_ROW_Y as i32,
             &ModeShareBox::new(&mode_stats, &stats.overall),
-        ),
+        )
+    } else {
+        canvas.draw(
+            col_x(1) as i32, SECOND_ROW_Y as i32,
+            &VerticalGamesBox::new(&mode_games, COL_WIDTH, SECOND_ROW_HEIGHT),
+        )
     };
 
     canvas
@@ -572,14 +575,14 @@ impl Shape for LevelSection<'_> {
 
 struct SkinSection<'a> {
     skin: Option<&'a DynamicImage>,
-    mode: Mode,
+    mode_label: &'a str,
     network_level: f64,
 }
 
 
 impl<'a> SkinSection<'a> {
-    fn new(skin: Option<&'a DynamicImage>, mode: Mode, network_level: f64) -> Self {
-        Self { skin, mode, network_level }
+    fn new(skin: Option<&'a DynamicImage>, mode_label: &'a str, network_level: f64) -> Self {
+        Self { skin, mode_label, network_level }
     }
 }
 
@@ -609,7 +612,7 @@ impl Shape for SkinSection<'_> {
             .draw(&mut ctx.at(0, SKIN_PADDING as i32));
 
         let mode_text = MCText::new()
-            .span(&format!("({})", self.mode.display_name())).color(NamedColor::Gray)
+            .span(&format!("({})", self.mode_label)).color(NamedColor::Gray)
             .build();
         let mode_y = SKIN_BOX_HEIGHT - SKIN_PADDING - mode_text_height;
         TextBlock::new()

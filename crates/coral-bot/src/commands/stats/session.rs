@@ -15,8 +15,8 @@ use render::TagIcon;
 use crate::framework::Data;
 use crate::rendering::{SessionType, render_session};
 use super::{
-    CACHE_TTL_SECS, create_mode_dropdown, disable_components, encode_png, extract_select_value,
-    extract_tag_icons, fetch_skin, parse_mode_value, resolve_uuid, send_deferred_error,
+    CACHE_TTL_SECS, create_mode_dropdown, disable_components, encode_png, extract_select_modes,
+    extract_select_value, extract_tag_icons, fetch_skin, resolve_uuid, send_deferred_error,
     spawn_expiry_with_retain,
 };
 
@@ -37,7 +37,7 @@ pub struct SessionCache {
     descriptions: HashMap<String, String>,
     markers: Vec<SessionMarker>,
     auto_presets: Vec<AutoPreset>,
-    mode: Mode,
+    modes: Vec<Mode>,
     current_view: String,
     render_data: SessionRenderData,
     last_interaction: Instant,
@@ -146,10 +146,10 @@ fn format_duration(duration: Duration) -> String {
 }
 
 
-fn format_stats_delta(current: &Stats, previous: &Stats, mode: Mode) -> String {
+fn format_stats_delta(current: &Stats, previous: &Stats, modes: &[Mode]) -> String {
     let star_diff = current.level as i64 - previous.level as i64;
-    let cur = current.get_mode_stats(mode);
-    let prev = previous.get_mode_stats(mode);
+    let cur = current.get_combined_mode_stats(modes);
+    let prev = previous.get_combined_mode_stats(modes);
     let fk = cur.final_kills as i64 - prev.final_kills as i64;
     let fd = cur.final_deaths as i64 - prev.final_deaths as i64;
     let fkdr = if fd == 0 { fk as f64 } else { fk as f64 / fd as f64 };
@@ -210,7 +210,7 @@ fn build_session_components(
     cache_key: &str,
     uuid: &str,
     current_view: &str,
-    mode: Mode,
+    modes: &[Mode],
     stats: &Stats,
     descriptions: &HashMap<String, String>,
     markers: &[SessionMarker],
@@ -218,7 +218,7 @@ fn build_session_components(
     is_owner: bool,
 ) -> Vec<CreateComponent<'static>> {
     let mode_row = CreateComponent::ActionRow(CreateActionRow::SelectMenu(create_mode_dropdown(
-        "session_mode", cache_key, mode, stats,
+        "session_mode", cache_key, modes, stats,
     )));
 
     let mut container_rows = vec![CreateContainerComponent::ActionRow(
@@ -388,7 +388,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
     let cache_key = command.id.to_string();
     let (defer_result, result) = tokio::join!(
         command.defer(&ctx.http),
-        precompute_session(data, &player, discord_id, Mode::Overall),
+        precompute_session(data, &player, discord_id, super::ALL_MODES),
     );
     defer_result?;
 
@@ -408,7 +408,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
                 .unwrap_or(false);
 
             let components = build_session_components(
-                &cache_key, &uuid, initial_view, Mode::Overall,
+                &cache_key, &uuid, initial_view, super::ALL_MODES,
                 &session_cache.render_data.current_stats, &session_cache.descriptions,
                 &session_cache.markers, &session_cache.auto_presets, is_owner,
             );
@@ -513,10 +513,9 @@ pub async fn handle_mode_switch(
     component: &ComponentInteraction,
     data: &Data,
 ) -> Result<()> {
-    let Some(value) = extract_select_value(component) else { return Ok(()) };
-    let Some((cache_key, mode)) = parse_mode_value(value) else { return Ok(()) };
+    let Some((cache_key, modes)) = extract_select_modes(component) else { return Ok(()) };
 
-    match check_mode_sender(data, cache_key, mode, component.user.id.get()) {
+    match check_mode_sender(data, cache_key, &modes, component.user.id.get()) {
         ModeOwnership::Ephemeral(png) => {
             component
                 .create_response(
@@ -532,7 +531,7 @@ pub async fn handle_mode_switch(
         ModeOwnership::Expired => {
             disable_components(ctx, component).await?;
         }
-        ModeOwnership::Sender => match rerender_for_mode(data, cache_key, mode) {
+        ModeOwnership::Sender => match rerender_for_modes(data, cache_key, &modes) {
             Some((png, components)) => {
                 component.create_response(&ctx.http, v2_update(components, Some(png))).await?;
             }
@@ -610,7 +609,7 @@ async fn handle_create_bookmark(
             let session_type = SessionType::Custom(name.to_string());
             let image = render_session(
                 &entry.render_data.current_stats, &prev_stats,
-                session_type.clone(), timestamp, None, entry.mode,
+                session_type.clone(), timestamp, None, &entry.modes,
                 entry.render_data.skin.as_ref(), &entry.render_data.tag_icons,
             );
             if let Ok(png) = encode_png(&image) {
@@ -619,7 +618,7 @@ async fn handle_create_bookmark(
             }
             entry.descriptions.insert(
                 key.clone(),
-                format_stats_delta(&entry.render_data.current_stats, &prev_stats, entry.mode),
+                format_stats_delta(&entry.render_data.current_stats, &prev_stats, &entry.modes),
             );
             entry.render_data.previous_stats.insert(key.clone(), (prev_stats, session_type, timestamp));
             if is_sender {
@@ -641,7 +640,7 @@ async fn handle_create_bookmark(
 
         let png = entry.images.get(&entry.current_view).cloned();
         let components = build_session_components(
-            cache_key, &entry.uuid, &entry.current_view, entry.mode,
+            cache_key, &entry.uuid, &entry.current_view, &entry.modes,
             &entry.render_data.current_stats, &entry.descriptions,
             &entry.markers, &entry.auto_presets, entry.is_owner,
         );
@@ -781,7 +780,7 @@ pub async fn handle_rename_modal(
 
         let png = entry.images.get(&entry.current_view).cloned();
         let components = build_session_components(
-            cache_key, &entry.uuid, &entry.current_view, entry.mode,
+            cache_key, &entry.uuid, &entry.current_view, &entry.modes,
             &entry.render_data.current_stats, &entry.descriptions,
             &entry.markers, &entry.auto_presets, entry.is_owner,
         );
@@ -862,7 +861,7 @@ pub async fn handle_mgmt_delete_button(
 
         let png = entry.images.get(&entry.current_view).cloned();
         let components = build_session_components(
-            cache_key, &entry.uuid, &entry.current_view, entry.mode,
+            cache_key, &entry.uuid, &entry.current_view, &entry.modes,
             &entry.render_data.current_stats, &entry.descriptions,
             &entry.markers, &entry.auto_presets, entry.is_owner,
         );
@@ -903,24 +902,20 @@ fn resolve_view_switch(
         return SwitchResult::Expired;
     }
     if entry.sender_id != user_id {
-        return match entry.images.get(image_key).cloned() {
+        return match render_view(entry, image_key) {
             Some(png) => SwitchResult::Ephemeral(png),
             None => SwitchResult::Expired,
         };
     }
 
-    let png = match entry.images.get(image_key).cloned() {
-        Some(png) => png,
-        None => match entry.images.get(&entry.current_view).cloned() {
-            Some(png) => png,
-            None => return SwitchResult::Expired,
-        },
-    };
     entry.current_view = image_key.to_string();
     entry.last_interaction = Instant::now();
+    let Some(png) = render_view(entry, image_key) else {
+        return SwitchResult::Expired;
+    };
 
     let components = build_session_components(
-        cache_key, &entry.uuid, image_key, entry.mode,
+        cache_key, &entry.uuid, image_key, &entry.modes,
         &entry.render_data.current_stats, &entry.descriptions,
         &entry.markers, &entry.auto_presets, entry.is_owner,
     );
@@ -928,7 +923,7 @@ fn resolve_view_switch(
 }
 
 
-fn check_mode_sender(data: &Data, cache_key: &str, mode: Mode, user_id: u64) -> ModeOwnership {
+fn check_mode_sender(data: &Data, cache_key: &str, modes: &[Mode], user_id: u64) -> ModeOwnership {
     let store = data.session_images.lock().unwrap();
     let Some(entry) = store.get(cache_key) else { return ModeOwnership::Expired };
 
@@ -936,29 +931,20 @@ fn check_mode_sender(data: &Data, cache_key: &str, mode: Mode, user_id: u64) -> 
         return ModeOwnership::Expired;
     }
     if entry.sender_id != user_id {
-        return entry
-            .render_data
-            .previous_stats
-            .get(&entry.current_view)
-            .and_then(|(prev_stats, session_type, started)| {
-                let image = render_session(
-                    &entry.render_data.current_stats, prev_stats,
-                    session_type.clone(), *started, None, mode,
-                    entry.render_data.skin.as_ref(), &entry.render_data.tag_icons,
-                );
-                encode_png(&image).ok().map(ModeOwnership::Ephemeral)
-            })
-            .unwrap_or(ModeOwnership::Expired);
+        return match render_view_with_modes(entry, &entry.current_view, modes) {
+            Some(png) => ModeOwnership::Ephemeral(png),
+            None => ModeOwnership::Expired,
+        };
     }
 
     ModeOwnership::Sender
 }
 
 
-fn rerender_for_mode(
+fn rerender_for_modes(
     data: &Data,
     cache_key: &str,
-    mode: Mode,
+    modes: &[Mode],
 ) -> Option<(Vec<u8>, Vec<CreateComponent<'static>>)> {
     let mut store = data.session_images.lock().unwrap();
     let entry = store.get_mut(cache_key)?;
@@ -968,14 +954,13 @@ fn rerender_for_mode(
         return None;
     }
 
-    entry.mode = mode;
+    entry.modes = modes.to_vec();
     entry.last_interaction = Instant::now();
-    rerender_all_views(entry);
-    update_descriptions(entry, mode);
+    update_descriptions(entry, modes);
 
-    let png = entry.images.get(&entry.current_view)?.clone();
+    let png = render_view(entry, &entry.current_view.clone())?;
     let components = build_session_components(
-        cache_key, &entry.uuid, &entry.current_view, mode,
+        cache_key, &entry.uuid, &entry.current_view, &entry.modes,
         &entry.render_data.current_stats, &entry.descriptions,
         &entry.markers, &entry.auto_presets, entry.is_owner,
     );
@@ -983,29 +968,26 @@ fn rerender_for_mode(
 }
 
 
-fn rerender_all_views(entry: &mut SessionCache) {
-    let skin = entry.render_data.skin.as_ref();
-    let keys: Vec<String> = entry.render_data.previous_stats.keys().cloned().collect();
-
-    for key in keys {
-        if let Some((prev, session_type, started)) = entry.render_data.previous_stats.get(&key) {
-            let image = render_session(
-                &entry.render_data.current_stats, prev, session_type.clone(),
-                *started, None, entry.mode, skin, &entry.render_data.tag_icons,
-            );
-            if let Ok(png) = encode_png(&image) {
-                entry.images.insert(key, png);
-            }
-        }
-    }
+fn render_view(entry: &SessionCache, view: &str) -> Option<Vec<u8>> {
+    render_view_with_modes(entry, view, &entry.modes)
 }
 
 
-fn update_descriptions(entry: &mut SessionCache, mode: Mode) {
+fn render_view_with_modes(entry: &SessionCache, view: &str, modes: &[Mode]) -> Option<Vec<u8>> {
+    let (prev, session_type, started) = entry.render_data.previous_stats.get(view)?;
+    let image = render_session(
+        &entry.render_data.current_stats, prev, session_type.clone(),
+        *started, None, modes, entry.render_data.skin.as_ref(), &entry.render_data.tag_icons,
+    );
+    encode_png(&image).ok()
+}
+
+
+fn update_descriptions(entry: &mut SessionCache, modes: &[Mode]) {
     let keys: Vec<String> = entry.render_data.previous_stats.keys().cloned().collect();
     for key in keys {
         if let Some((prev, _, _)) = entry.render_data.previous_stats.get(&key) {
-            entry.descriptions.insert(key, format_stats_delta(&entry.render_data.current_stats, prev, mode));
+            entry.descriptions.insert(key, format_stats_delta(&entry.render_data.current_stats, prev, modes));
         }
     }
 }
@@ -1015,7 +997,7 @@ async fn precompute_session(
     data: &Data,
     player: &str,
     discord_id: i64,
-    mode: Mode,
+    modes: &[Mode],
 ) -> Result<SessionCache, SessionError> {
     let t = Instant::now();
     let cached_uuid = resolve_uuid(data, player).await;
@@ -1044,7 +1026,7 @@ async fn precompute_session(
 
     let (images, previous_stats, descriptions, marker_list) = render_all_views(
         &current_stats, snapshots, &markers, &auto_presets,
-        mode, skin_image.as_ref(), &extract_tag_icons(&resp.tags), to_stats,
+        modes, skin_image.as_ref(), &extract_tag_icons(&resp.tags), to_stats,
     );
     debug!(at = ?t.elapsed(), "session render done");
 
@@ -1056,7 +1038,7 @@ async fn precompute_session(
         descriptions,
         markers: marker_list,
         auto_presets,
-        mode,
+        modes: modes.to_vec(),
         current_view: "daily".to_string(),
         render_data: SessionRenderData {
             current_stats,
@@ -1175,7 +1157,7 @@ fn render_all_views(
     snapshots: Vec<Option<(DateTime<Utc>, serde_json::Value)>>,
     markers: &[SessionMarker],
     auto_presets: &[AutoPreset],
-    mode: Mode,
+    modes: &[Mode],
     skin: Option<&DynamicImage>,
     tag_icons: &[TagIcon],
     to_stats: impl Fn(Option<serde_json::Value>) -> Option<Stats>,
@@ -1190,15 +1172,21 @@ fn render_all_views(
     let mut previous_stats = HashMap::new();
     let mut descriptions = HashMap::new();
     let mut snapshot_iter = snapshots.into_iter();
+    let mut first_rendered = false;
 
-    let mut render_view = |key: String, prev_stats: &Stats, session_type: SessionType, timestamp: DateTime<Utc>| {
-        descriptions.insert(key.clone(), format_stats_delta(current_stats, prev_stats, mode));
-        let image = render_session(
-            current_stats, prev_stats, session_type.clone(),
-            timestamp, None, mode, skin, tag_icons,
-        );
-        if let Ok(png) = encode_png(&image) {
-            images.insert(key.clone(), png);
+    let mut add_view = |key: String, prev_stats: &Stats, session_type: SessionType, timestamp: DateTime<Utc>,
+                        images: &mut HashMap<String, Vec<u8>>, previous_stats: &mut HashMap<String, (Stats, SessionType, DateTime<Utc>)>,
+                        first_rendered: &mut bool| {
+        descriptions.insert(key.clone(), format_stats_delta(current_stats, prev_stats, modes));
+        if !*first_rendered {
+            let image = render_session(
+                current_stats, prev_stats, session_type.clone(),
+                timestamp, None, modes, skin, tag_icons,
+            );
+            if let Ok(png) = encode_png(&image) {
+                images.insert(key.clone(), png);
+                *first_rendered = true;
+            }
         }
         previous_stats.insert(key, (prev_stats.clone(), session_type, timestamp));
     };
@@ -1206,7 +1194,8 @@ fn render_all_views(
     for period in PERIODS {
         let target_time = period.last_reset(now);
         if let Some(prev) = to_stats(snapshot_iter.next().flatten().map(|(_, v)| v)) {
-            render_view(period.key().to_string(), &prev, period_session_type(period), target_time);
+            add_view(period.key().to_string(), &prev, period_session_type(period), target_time,
+                     &mut images, &mut previous_stats, &mut first_rendered);
         }
     }
 
@@ -1216,25 +1205,28 @@ fn render_all_views(
         let snapshot = snapshot_iter.next().flatten();
 
         if let Some(prev) = to_stats(snapshot.map(|(_, v)| v)) {
-            render_view(fp_key.to_string(), &prev, SessionType::Custom(fp_label.to_string()), target_time);
+            add_view(fp_key.to_string(), &prev, SessionType::Custom(fp_label.to_string()), target_time,
+                     &mut images, &mut previous_stats, &mut first_rendered);
         }
     }
 
     let marker_list: Vec<SessionMarker> = markers.to_vec();
     for marker in markers {
         if let Some(prev) = to_stats(snapshot_iter.next().flatten().map(|(_, v)| v)) {
-            render_view(
+            add_view(
                 format!("marker:{}", marker.name), &prev,
                 SessionType::Custom(marker.name.clone()), marker.snapshot_timestamp,
+                &mut images, &mut previous_stats, &mut first_rendered,
             );
         }
     }
 
     for preset in auto_presets {
         if let Some(prev) = to_stats(snapshot_iter.next().flatten().map(|(_, v)| v)) {
-            render_view(
+            add_view(
                 format!("preset:{}", preset.key), &prev,
                 SessionType::Custom(preset.label.clone()), preset.timestamp,
+                &mut images, &mut previous_stats, &mut first_rendered,
             );
         }
     }

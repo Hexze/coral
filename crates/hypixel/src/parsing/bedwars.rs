@@ -38,6 +38,19 @@ impl Mode {
         ]
     }
 
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            Self::Overall => "Overall",
+            Self::Core => "Core",
+            Self::Solos => "1s",
+            Self::Doubles => "2s",
+            Self::Threes => "3s",
+            Self::Fours => "4s",
+            Self::FourTeamModes => "3s/4s",
+            Self::FourVFour => "4v4",
+        }
+    }
+
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "overall" => Some(Self::Overall),
@@ -161,6 +174,26 @@ impl Stats {
         }
     }
 
+    pub fn get_combined_mode_stats(&self, modes: &[Mode]) -> ModeStats {
+        if modes.len() == 1 {
+            return self.get_mode_stats(modes[0]);
+        }
+        modes.iter().fold(ModeStats::default(), |acc, &mode| {
+            let ms = self.get_mode_stats(mode);
+            ModeStats {
+                wins: acc.wins + ms.wins,
+                losses: acc.losses + ms.losses,
+                kills: acc.kills + ms.kills,
+                deaths: acc.deaths + ms.deaths,
+                final_kills: acc.final_kills + ms.final_kills,
+                final_deaths: acc.final_deaths + ms.final_deaths,
+                beds_broken: acc.beds_broken + ms.beds_broken,
+                beds_lost: acc.beds_lost + ms.beds_lost,
+                winstreak: None,
+            }
+        })
+    }
+
     fn four_team_modes_stats(&self) -> ModeStats {
         let (t, f) = (&self.threes, &self.fours);
         ModeStats {
@@ -175,6 +208,28 @@ impl Stats {
             winstreak: None,
         }
     }
+}
+
+
+pub fn combined_mode_name(modes: &[Mode]) -> String {
+    if modes.len() == 1 {
+        return modes[0].display_name().to_string();
+    }
+    let has = |m: Mode| modes.contains(&m);
+    let exactly = |expected: &[Mode]| modes.len() == expected.len() && expected.iter().all(|m| has(*m));
+    if exactly(&[Mode::Solos, Mode::Doubles, Mode::Threes, Mode::Fours, Mode::FourVFour]) {
+        return "Overall".to_string();
+    }
+    if exactly(&[Mode::Solos, Mode::Doubles, Mode::Threes, Mode::Fours]) {
+        return "Core".to_string();
+    }
+    if exactly(&[Mode::Threes, Mode::Fours]) {
+        return "4 Team Modes".to_string();
+    }
+    if exactly(&[Mode::Solos, Mode::Doubles]) {
+        return "8 Team Modes".to_string();
+    }
+    modes.iter().map(|m| m.short_name()).collect::<Vec<_>>().join("/")
 }
 
 

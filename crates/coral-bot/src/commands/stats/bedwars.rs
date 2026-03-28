@@ -15,8 +15,8 @@ use render::TagIcon;
 use crate::framework::Data;
 use crate::rendering::render_bedwars;
 use super::{
-    CACHE_TTL_SECS, create_mode_dropdown, disable_components, encode_png, extract_select_value,
-    extract_tag_icons, fetch_skin, parse_mode_value, resolve_uuid, send_deferred_error, spawn_expiry,
+    CACHE_TTL_SECS, create_mode_dropdown, disable_components, encode_png, extract_select_modes,
+    extract_tag_icons, fetch_skin, resolve_uuid, send_deferred_error, spawn_expiry,
 };
 
 
@@ -25,7 +25,7 @@ pub struct BedwarsCache {
     pub skin: Option<DynamicImage>,
     pub tag_icons: Vec<TagIcon>,
     pub snapshots: Vec<(DateTime<Utc>, WinstreakSnapshot)>,
-    pub mode: Mode,
+    pub modes: Vec<Mode>,
     pub sender_id: u64,
     pub last_interaction: Instant,
 }
@@ -98,7 +98,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
             debug!(at = ?t.elapsed(), "render done");
 
             let mode_row = CreateActionRow::SelectMenu(create_mode_dropdown(
-                "bedwars_mode", &cache_key, cache.mode, &cache.stats,
+                "bedwars_mode", &cache_key, &cache.modes, &cache.stats,
             ));
             let expiry_key = cache_key.clone();
 
@@ -146,10 +146,9 @@ pub async fn handle_mode_switch(
     component: &ComponentInteraction,
     data: &Data,
 ) -> Result<()> {
-    let Some(value) = extract_select_value(component) else { return Ok(()) };
-    let Some((cache_key, mode)) = parse_mode_value(value) else { return Ok(()) };
+    let Some((cache_key, modes)) = extract_select_modes(component) else { return Ok(()) };
 
-    match resolve_mode_switch(data, cache_key, mode, component.user.id.get()) {
+    match resolve_mode_switch(data, cache_key, &modes, component.user.id.get()) {
         CacheResult::Ok(png, mode_row) => {
             component
                 .create_response(
@@ -183,7 +182,7 @@ pub async fn handle_mode_switch(
 }
 
 
-fn resolve_mode_switch(data: &Data, cache_key: &str, mode: Mode, user_id: u64) -> CacheResult {
+fn resolve_mode_switch(data: &Data, cache_key: &str, modes: &[Mode], user_id: u64) -> CacheResult {
     let mut store = data.bedwars_images.lock().unwrap();
 
     let Some(entry) = store.get_mut(cache_key) else {
@@ -194,13 +193,13 @@ fn resolve_mode_switch(data: &Data, cache_key: &str, mode: Mode, user_id: u64) -
         return CacheResult::Expired;
     }
     if entry.sender_id != user_id {
-        return render_ephemeral(entry, mode);
+        return render_ephemeral(entry, modes);
     }
 
-    entry.mode = mode;
+    entry.modes = modes.to_vec();
     entry.last_interaction = Instant::now();
     let mode_row = CreateActionRow::SelectMenu(create_mode_dropdown(
-        "bedwars_mode", cache_key, mode, &entry.stats,
+        "bedwars_mode", cache_key, &entry.modes, &entry.stats,
     ));
 
     match render_and_encode(entry) {
@@ -210,11 +209,10 @@ fn resolve_mode_switch(data: &Data, cache_key: &str, mode: Mode, user_id: u64) -
 }
 
 
-fn render_ephemeral(entry: &mut BedwarsCache, mode: Mode) -> CacheResult {
-    let original = entry.mode;
-    entry.mode = mode;
+fn render_ephemeral(entry: &mut BedwarsCache, modes: &[Mode]) -> CacheResult {
+    let original = std::mem::replace(&mut entry.modes, modes.to_vec());
     let result = render_and_encode(entry);
-    entry.mode = original;
+    entry.modes = original;
     match result {
         Ok(png) => CacheResult::Ephemeral(png),
         Err(_) => CacheResult::Expired,
@@ -223,13 +221,9 @@ fn render_ephemeral(entry: &mut BedwarsCache, mode: Mode) -> CacheResult {
 
 
 fn render_and_encode(cache: &BedwarsCache) -> Result<Vec<u8>> {
-    let winstreaks = winstreaks::calculate(&cache.snapshots, cache.mode);
+    let winstreaks = winstreaks::calculate(&cache.snapshots, &cache.modes);
     encode_png(&render_bedwars(
-        &cache.stats,
-        cache.mode,
-        cache.skin.as_ref(),
-        &winstreaks,
-        &cache.tag_icons,
+        &cache.stats, &cache.modes, cache.skin.as_ref(), &winstreaks, &cache.tag_icons,
     ))
 }
 
@@ -288,7 +282,7 @@ async fn fetch_player_data(data: &Data, player: &str) -> Result<BedwarsCache, St
         skin: skin_result.map(|s| s.data),
         tag_icons: extract_tag_icons(&resp.tags),
         snapshots,
-        mode: Mode::Overall,
+        modes: super::ALL_MODES.to_vec(),
         sender_id: 0,
         last_interaction: Instant::now(),
     })

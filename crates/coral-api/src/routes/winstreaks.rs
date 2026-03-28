@@ -77,7 +77,7 @@ pub async fn player_winstreaks(
         .await?;
 
     let modes = MODES.iter().map(|&mode| {
-        let history = winstreaks::calculate(&snapshots, mode);
+        let history = winstreaks::calculate(&snapshots, &[mode]);
         let streaks = history.streaks.into_iter().map(|s| StreakEntry {
             value: s.value,
             approximate: s.approximate,

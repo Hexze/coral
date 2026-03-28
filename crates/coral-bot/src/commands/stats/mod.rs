@@ -22,19 +22,22 @@ use crate::framework::Data;
 pub(super) const CACHE_TTL_SECS: u64 = 2 * 60;
 
 const MODE_CHOICES: &[(Mode, &str)] = &[
-    (Mode::Overall, "overall"),
-    (Mode::Core, "core"),
     (Mode::Solos, "solos"),
     (Mode::Doubles, "doubles"),
     (Mode::Threes, "threes"),
     (Mode::Fours, "fours"),
+    (Mode::FourVFour, "4v4"),
+];
+
+pub const ALL_MODES: &[Mode] = &[
+    Mode::Solos, Mode::Doubles, Mode::Threes, Mode::Fours, Mode::FourVFour,
 ];
 
 
 pub fn create_mode_dropdown(
     custom_id: &str,
     cache_key: &str,
-    current: Mode,
+    selected: &[Mode],
     stats: &BedwarsPlayerStats,
 ) -> CreateSelectMenu<'static> {
     let options: Vec<CreateSelectMenuOption<'static>> = MODE_CHOICES
@@ -42,7 +45,7 @@ pub fn create_mode_dropdown(
         .map(|(mode, value)| {
             let ms = stats.get_mode_stats(*mode);
             CreateSelectMenuOption::new(mode.display_name(), format!("{value}:{cache_key}"))
-                .default_selection(*mode == current)
+                .default_selection(selected.contains(mode))
                 .description(format!("{:.2} fkdr, {:.2} wlr", ms.fkdr(), ms.wlr()))
         })
         .collect();
@@ -51,7 +54,8 @@ pub fn create_mode_dropdown(
         custom_id.to_string(),
         CreateSelectMenuKind::String { options: options.into() },
     )
-    .placeholder(current.display_name())
+    .min_values(1)
+    .max_values(MODE_CHOICES.len() as u8)
 }
 
 
@@ -66,6 +70,22 @@ pub fn extract_select_value(component: &ComponentInteraction) -> Option<&str> {
         ComponentInteractionDataKind::StringSelect { values } => values.first().map(|s| s.as_str()),
         _ => None,
     }
+}
+
+
+pub fn extract_select_modes(component: &ComponentInteraction) -> Option<(&str, Vec<Mode>)> {
+    let values = match &component.data.kind {
+        ComponentInteractionDataKind::StringSelect { values } => values,
+        _ => return None,
+    };
+    let mut cache_key = None;
+    let mut modes = Vec::new();
+    for v in values {
+        let (key, mode) = parse_mode_value(v.as_str())?;
+        cache_key = Some(key);
+        modes.push(mode);
+    }
+    Some((cache_key?, modes))
 }
 
 

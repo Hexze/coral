@@ -26,7 +26,7 @@ pub struct WinstreakHistory {
 }
 
 
-pub fn calculate(snapshots: &[(DateTime<Utc>, WinstreakSnapshot)], mode: Mode) -> WinstreakHistory {
+pub fn calculate(snapshots: &[(DateTime<Utc>, WinstreakSnapshot)], modes: &[Mode]) -> WinstreakHistory {
     if snapshots.is_empty() {
         return WinstreakHistory { streaks: Vec::new() };
     }
@@ -36,11 +36,11 @@ pub fn calculate(snapshots: &[(DateTime<Utc>, WinstreakSnapshot)], mode: Mode) -
     let mut peak_api_ws: Option<u64> = None;
 
     for (i, (_ts, stats)) in snapshots.iter().enumerate() {
-        let (wins, losses) = mode_wins_losses(stats, mode);
-        let api_ws = api_winstreak(stats, mode);
+        let (wins, losses) = combined_wins_losses(stats, modes);
+        let api_ws = combined_api_winstreak(stats, modes);
 
         let delta_losses = if i > 0 {
-            let (_, prev_losses) = mode_wins_losses(&snapshots[i - 1].1, mode);
+            let (_, prev_losses) = combined_wins_losses(&snapshots[i - 1].1, modes);
             losses.saturating_sub(prev_losses)
         } else {
             0
@@ -53,8 +53,8 @@ pub fn calculate(snapshots: &[(DateTime<Utc>, WinstreakSnapshot)], mode: Mode) -
         if let (Some(start_idx), true) = (streak_start, delta_losses > 0) {
             let prev_idx = i - 1;
             let prev_ts = snapshots[prev_idx].0;
-            let (start_wins, _) = mode_wins_losses(&snapshots[start_idx].1, mode);
-            let (prev_wins, _) = mode_wins_losses(&snapshots[prev_idx].1, mode);
+            let (start_wins, _) = combined_wins_losses(&snapshots[start_idx].1, modes);
+            let (prev_wins, _) = combined_wins_losses(&snapshots[prev_idx].1, modes);
 
             let (value, approximate) = match peak_api_ws {
                 Some(peak) => {
@@ -114,6 +114,17 @@ fn mode_wins_losses(stats: &WinstreakSnapshot, mode: Mode) -> (u64, u64) {
 }
 
 
+fn combined_wins_losses(stats: &WinstreakSnapshot, modes: &[Mode]) -> (u64, u64) {
+    if modes.len() == 1 {
+        return mode_wins_losses(stats, modes[0]);
+    }
+    modes.iter().fold((0, 0), |(w, l), &mode| {
+        let (mw, ml) = mode_wins_losses(stats, mode);
+        (w + mw, l + ml)
+    })
+}
+
+
 fn api_winstreak(stats: &WinstreakSnapshot, mode: Mode) -> Option<u64> {
     match mode {
         Mode::Overall | Mode::Core => stats.overall.winstreak,
@@ -124,6 +135,14 @@ fn api_winstreak(stats: &WinstreakSnapshot, mode: Mode) -> Option<u64> {
         Mode::FourTeamModes => None,
         Mode::FourVFour => stats.four_v_four.winstreak,
     }
+}
+
+
+fn combined_api_winstreak(stats: &WinstreakSnapshot, modes: &[Mode]) -> Option<u64> {
+    if modes.len() == 1 {
+        return api_winstreak(stats, modes[0]);
+    }
+    None
 }
 
 
@@ -144,13 +163,13 @@ mod tests {
 
     #[test]
     fn empty_snapshots_returns_empty() {
-        assert!(calculate(&[], Mode::Solos).streaks.is_empty());
+        assert!(calculate(&[], &[Mode::Solos]).streaks.is_empty());
     }
 
     #[test]
     fn single_snapshot_no_streaks() {
         let snaps = vec![(ts(1000), snapshot(100, 50, Some(5)))];
-        assert!(calculate(&snaps, Mode::Solos).streaks.is_empty());
+        assert!(calculate(&snaps, &[Mode::Solos]).streaks.is_empty());
     }
 
     #[test]
@@ -160,7 +179,7 @@ mod tests {
             (ts(2000), snapshot(110, 50, Some(10))),
             (ts(3000), snapshot(112, 51, Some(2))),
         ];
-        assert!(calculate(&snaps, Mode::Solos).streaks.is_empty());
+        assert!(calculate(&snaps, &[Mode::Solos]).streaks.is_empty());
     }
 
     #[test]
@@ -170,7 +189,7 @@ mod tests {
             (ts(2000), snapshot(115, 50, Some(15))),
             (ts(3000), snapshot(116, 51, Some(1))),
         ];
-        let history = calculate(&snaps, Mode::Solos);
+        let history = calculate(&snaps, &[Mode::Solos]);
         assert_eq!(history.streaks.len(), 1);
         assert!(history.streaks[0].value >= MIN_STREAK_THRESHOLD);
     }
@@ -191,7 +210,7 @@ mod tests {
                 ..Default::default()
             }),
         ];
-        let history = calculate(&snaps, Mode::Solos);
+        let history = calculate(&snaps, &[Mode::Solos]);
         assert_eq!(history.streaks.len(), 1);
         assert_eq!(history.streaks[0].value, 20);
         assert!(history.streaks[0].approximate);
@@ -206,7 +225,7 @@ mod tests {
             (ts(4000), snapshot(137, 51, Some(20))),
             (ts(5000), snapshot(138, 52, Some(1))),
         ];
-        let history = calculate(&snaps, Mode::Solos);
+        let history = calculate(&snaps, &[Mode::Solos]);
         assert_eq!(history.streaks.len(), 2);
         assert!(history.streaks[0].value >= history.streaks[1].value);
     }

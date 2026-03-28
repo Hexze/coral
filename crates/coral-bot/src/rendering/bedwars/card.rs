@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use hypixel::player::color_code;
-use hypixel::stats::bedwars::{self, Mode, ModeStats, Stats};
+use hypixel::stats::bedwars::{self, Mode, ModeStats, Stats, combined_mode_name};
 use image::DynamicImage;
 use render::canvas::{
     BOX_BACKGROUND, CANVAS_BACKGROUND, Canvas, DrawContext, MCText, NamedColor, RgbaImage, Shape,
@@ -13,8 +13,8 @@ use super::layout::*;
 use crate::rendering::common::{self, *};
 
 
-pub fn render(stats: &Stats, mode: Mode, skin: Option<&DynamicImage>) -> RgbaImage {
-    let mode_stats = stats.get_mode_stats(mode);
+pub fn render(stats: &Stats, modes: &[Mode], skin: Option<&DynamicImage>) -> RgbaImage {
+    let mode_stats = stats.get_combined_mode_stats(modes);
 
     let t0 = Instant::now();
     let canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT).background(CANVAS_BACKGROUND);
@@ -29,7 +29,7 @@ pub fn render(stats: &Stats, mode: Mode, skin: Option<&DynamicImage>) -> RgbaIma
     let t_level = t0.elapsed();
 
     let t0 = Instant::now();
-    let canvas = canvas.draw(col_x(0) as i32, MAIN_ROW_Y as i32, &SkinSection::new(skin, mode));
+    let canvas = canvas.draw(col_x(0) as i32, MAIN_ROW_Y as i32, &SkinSection::new(skin, &combined_mode_name(modes)));
     let t_skin = t0.elapsed();
 
     let t0 = Instant::now();
@@ -313,13 +313,13 @@ impl Shape for LevelSection<'_> {
 
 struct SkinSection<'a> {
     skin: Option<&'a DynamicImage>,
-    mode: Mode,
+    mode_label: String,
 }
 
 
 impl<'a> SkinSection<'a> {
-    fn new(skin: Option<&'a DynamicImage>, mode: Mode) -> Self {
-        Self { skin, mode }
+    fn new(skin: Option<&'a DynamicImage>, mode_label: &str) -> Self {
+        Self { skin, mode_label: mode_label.to_string() }
     }
 }
 
@@ -347,7 +347,7 @@ impl Shape for SkinSection<'_> {
 
         let mode_text = MCText::new()
             .span("(").color(NamedColor::Gray)
-            .then(self.mode.display_name()).then(")")
+            .then(&self.mode_label).then(")")
             .build();
 
         let mut mode_ctx = ctx.at(0, (SKIN_BOX_HEIGHT - 27) as i32);
