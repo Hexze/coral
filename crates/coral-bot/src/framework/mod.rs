@@ -53,7 +53,7 @@ pub struct Data {
     pub pending_overwrites: Arc<Mutex<HashMap<String, PendingOverwrite>>>,
     pub pending_tag_changes: Arc<Mutex<HashMap<String, PendingTagChanges>>>,
     pub sync_cooldowns: Arc<Mutex<HashMap<UserId, Instant>>>,
-    pub sync_progress: Arc<Mutex<HashMap<GuildId, Arc<crate::sync::SyncProgress>>>>,
+    pub sync_cancel_tokens: Arc<Mutex<HashMap<GuildId, crate::sync::CancelToken>>>,
     pub active_interactions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -259,6 +259,7 @@ impl Handler {
             _ if id.starts_with("setup_nickname_reset:") => commands::admin::setup::handle_nickname_reset_button(ctx, component, &self.data).await,
             _ if id.starts_with("setup_autorole_back:") => commands::admin::setup::handle_cancel_button(ctx, component, &self.data).await,
             _ if id.starts_with("setup_autorole_cancel:") => commands::admin::setup::handle_autorole_button(ctx, component, &self.data).await,
+            _ if id.starts_with("setup_sync_cancel:") => commands::admin::setup::handle_sync_cancel_button(ctx, component, &self.data).await,
             _ if id.starts_with("setup_cancel:") => commands::admin::setup::handle_cancel_button(ctx, component, &self.data).await,
             _ => {
                 tracing::warn!("unhandled component interaction: {id}");

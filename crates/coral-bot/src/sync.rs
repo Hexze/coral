@@ -1,5 +1,5 @@
 use std::collections::HashMap as StdHashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,11 @@ const REFRESH_THRESHOLD: Duration = Duration::from_secs(4 * 3600);
 const MEMBERS_PER_PAGE: u16 = 1000;
 
 
+pub type CancelToken = Arc<AtomicBool>;
+
+pub fn cancel_token() -> CancelToken { Arc::new(AtomicBool::new(false)) }
+
+
 async fn yield_to_interactions(data: &Data) {
     while data.active_interactions.load(Ordering::Relaxed) > 0 {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -31,36 +36,10 @@ async fn yield_to_interactions(data: &Data) {
 }
 
 
-pub struct SyncProgress {
-    pub label: String,
-    pub processed: AtomicUsize,
-    pub total: AtomicUsize,
-    pub done: AtomicBool,
+fn is_cancelled(token: &CancelToken) -> bool {
+    token.load(Ordering::Relaxed)
 }
 
-
-impl SyncProgress {
-    pub fn new(label: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self {
-            label: label.into(),
-            processed: AtomicUsize::new(0),
-            total: AtomicUsize::new(0),
-            done: AtomicBool::new(false),
-        })
-    }
-
-    pub fn advance(&self) { self.processed.fetch_add(1, Ordering::Relaxed); }
-    pub fn set_total(&self, total: usize) { self.total.store(total, Ordering::Relaxed); }
-    pub fn finish(&self) { self.done.store(true, Ordering::Relaxed); }
-
-    pub fn snapshot(&self) -> (usize, usize, bool) {
-        (
-            self.processed.load(Ordering::Relaxed),
-            self.total.load(Ordering::Relaxed),
-            self.done.load(Ordering::Relaxed),
-        )
-    }
-}
 
 
 pub fn build_nickname(prefix: &str, current_nick: Option<&str>) -> String {
@@ -218,11 +197,8 @@ pub async fn sync_user(ctx: Context, data: Data, user_id: UserId) {
 }
 
 
-pub async fn sync_guild(ctx: Context, data: Data, guild_id: GuildId) {
-    let progress = register_progress(&data, guild_id, "Syncing members");
-    let result = try_sync_guild(&ctx, &data, guild_id, Some(&progress)).await;
-    progress.finish();
-    if let Err(e) = result {
+pub async fn sync_guild(ctx: Context, data: Data, guild_id: GuildId, cancel: CancelToken) {
+    if let Err(e) = try_sync_guild(&ctx, &data, guild_id, &cancel).await {
         tracing::warn!("Guild sync failed for {guild_id}: {e}");
     }
 }
@@ -268,7 +244,7 @@ async fn try_sync_guild(
     ctx: &Context,
     data: &Data,
     guild_id: GuildId,
-    progress: Option<&SyncProgress>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     let config_repo = GuildConfigRepository::new(data.db.pool());
     let config = match config_repo.get(guild_id.get() as i64).await? {
@@ -279,15 +255,15 @@ async fn try_sync_guild(
 
     let non_bots: Vec<_> = fetch_all_members(ctx, guild_id).await?.into_iter().filter(|m| !m.user.bot()).collect();
     let total = non_bots.len();
-    if let Some(p) = progress { p.set_total(total) }
 
     let mut updates = 0usize;
     for chunk in non_bots.chunks(MEMBERS_PER_PAGE as usize) {
-        let (_, page_updates) = sync_member_batch(ctx, data, guild_id, chunk, &config, &rules, progress).await;
+        if is_cancelled(cancel) { break }
+        let (_, page_updates) = sync_member_batch(ctx, data, guild_id, chunk, &config, &rules, cancel).await;
         updates += page_updates;
     }
 
-    tracing::info!("Guild sync {guild_id}: {updates}/{total} members updated");
+    tracing::info!("Guild sync {guild_id}: {updates}/{total} members updated{}", if is_cancelled(cancel) { " (cancelled)" } else { "" });
     Ok(())
 }
 
@@ -299,7 +275,7 @@ async fn sync_member_batch(
     members: &[Member],
     config: &GuildConfig,
     rules: &[GuildRoleRule],
-    progress: Option<&SyncProgress>,
+    cancel: &CancelToken,
 ) -> (usize, usize) {
     let members_repo = MemberRepository::new(data.db.pool());
     let discord_ids: Vec<i64> = members.iter().map(|m| m.user.id.get() as i64).collect();
@@ -315,7 +291,7 @@ async fn sync_member_batch(
     let mut tasks = tokio::task::JoinSet::new();
 
     for member in members {
-        if member.user.bot() { continue }
+        if member.user.bot() || is_cancelled(cancel) { continue }
 
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let ctx = ctx.clone();
@@ -352,7 +328,6 @@ async fn sync_member_batch(
     while let Some(result) = tasks.join_next().await {
         total += 1;
         if matches!(result, Ok(true)) { updates += 1 }
-        if let Some(p) = progress { p.advance() }
     }
 
     (total, updates)
@@ -448,11 +423,8 @@ async fn sync_unlinked_member(
 }
 
 
-pub async fn clear_nicknames(ctx: Context, data: Data, guild_id: GuildId) {
-    let progress = register_progress(&data, guild_id, "Clearing nicknames");
-    let result = try_clear_nicknames(&ctx, &data, guild_id, &progress).await;
-    progress.finish();
-    if let Err(e) = result {
+pub async fn clear_nicknames(ctx: Context, data: Data, guild_id: GuildId, cancel: CancelToken) {
+    if let Err(e) = try_clear_nicknames(&ctx, &data, guild_id, &cancel).await {
         tracing::warn!("Failed to clear nicknames for {guild_id}: {e}");
     }
 }
@@ -462,30 +434,26 @@ async fn try_clear_nicknames(
     ctx: &Context,
     data: &Data,
     guild_id: GuildId,
-    progress: &SyncProgress,
+    cancel: &CancelToken,
 ) -> Result<()> {
     let targets = scan_members(ctx, guild_id, |m| m.nick.is_some() && !m.user.bot()).await?;
-    progress.set_total(targets.len());
 
     for user_id in targets {
+        if is_cancelled(cancel) { break }
         let config = GuildConfigRepository::new(data.db.pool()).get(guild_id.get() as i64).await?;
         if config.as_ref().and_then(|c| c.nickname_template.as_ref()).is_some() {
             return Ok(());
         }
         yield_to_interactions(data).await;
         let _ = guild_id.edit_member(&ctx.http, user_id, EditMember::new().nickname("")).await;
-        progress.advance();
     }
 
     Ok(())
 }
 
 
-pub async fn clear_role(ctx: Context, data: Data, guild_id: GuildId, role_id: RoleId) {
-    let progress = register_progress(&data, guild_id, format!("Stripping <@&{}>", role_id));
-    let result = try_clear_role(&ctx, &data, guild_id, role_id, &progress).await;
-    progress.finish();
-    if let Err(e) = result {
+pub async fn clear_role(ctx: Context, data: Data, guild_id: GuildId, role_id: RoleId, cancel: CancelToken) {
+    if let Err(e) = try_clear_role(&ctx, &data, guild_id, role_id, &cancel).await {
         tracing::warn!("Failed to clear role {role_id} in {guild_id}: {e}");
     }
 }
@@ -496,15 +464,14 @@ async fn try_clear_role(
     data: &Data,
     guild_id: GuildId,
     role_id: RoleId,
-    progress: &SyncProgress,
+    cancel: &CancelToken,
 ) -> Result<()> {
     let targets = scan_members(ctx, guild_id, |m| m.roles.contains(&role_id)).await?;
-    progress.set_total(targets.len());
 
     for user_id in targets {
+        if is_cancelled(cancel) { break }
         yield_to_interactions(data).await;
         let _ = ctx.http.remove_member_role(guild_id, user_id, role_id, None).await;
-        progress.advance();
     }
 
     Ok(())
@@ -518,17 +485,9 @@ pub async fn swap_role(
     old_role: Option<RoleId>,
     new_role: Option<RoleId>,
     config_field: RoleConfigField,
+    cancel: CancelToken,
 ) {
-    let label = match (old_role, new_role) {
-        (Some(old), Some(new)) => format!("Swapping <@&{}> → <@&{}>", old, new),
-        (Some(old), None) => format!("Removing <@&{}>", old),
-        (None, Some(new)) => format!("Assigning <@&{}>", new),
-        (None, None) => return,
-    };
-    let progress = register_progress(&data, guild_id, label);
-    let result = try_swap_role(&ctx, &data, guild_id, old_role, new_role, config_field, &progress).await;
-    progress.finish();
-    if let Err(e) = result {
+    if let Err(e) = try_swap_role(&ctx, &data, guild_id, old_role, new_role, config_field, &cancel).await {
         tracing::warn!("Failed to swap role in {guild_id}: {e}");
     }
 }
@@ -548,15 +507,15 @@ async fn try_swap_role(
     old_role: Option<RoleId>,
     new_role: Option<RoleId>,
     config_field: RoleConfigField,
-    progress: &SyncProgress,
+    cancel: &CancelToken,
 ) -> Result<()> {
     if old_role == new_role { return Ok(()) }
     let Some(old) = old_role else { return Ok(()) };
 
     let targets = scan_members(ctx, guild_id, |m| !m.user.bot() && m.roles.contains(&old)).await?;
-    progress.set_total(targets.len());
 
     for user_id in targets {
+        if is_cancelled(cancel) { break }
         let current_config = GuildConfigRepository::new(data.db.pool()).get(guild_id.get() as i64).await?;
         let current_role_id = current_config.as_ref().and_then(|c| match config_field {
             RoleConfigField::Link => c.link_role_id,
@@ -565,7 +524,6 @@ async fn try_swap_role(
         if current_role_id != new_role.map(|r| r.get() as i64) { return Ok(()) }
         yield_to_interactions(data).await;
         let _ = ctx.http.remove_member_role(guild_id, user_id, old, None).await;
-        progress.advance();
     }
 
     Ok(())
@@ -624,7 +582,7 @@ pub async fn startup_sync(ctx: Context, data: Data) {
         if config.nickname_template.is_none() && rules.is_empty() { continue }
 
         tracing::info!("Startup sync starting for guild {guild_id}");
-        if let Err(e) = try_sync_guild(&ctx, &data, guild_id, None).await {
+        if let Err(e) = try_sync_guild(&ctx, &data, guild_id, &cancel_token()).await {
             tracing::warn!("Startup sync failed for guild {guild_id}: {e}");
         }
     }
@@ -663,20 +621,3 @@ async fn scan_members(
 }
 
 
-fn register_progress(data: &Data, guild_id: GuildId, label: impl Into<String>) -> Arc<SyncProgress> {
-    let progress = SyncProgress::new(label);
-    data.sync_progress.lock().unwrap().insert(guild_id, Arc::clone(&progress));
-    progress
-}
-
-
-pub fn get_progress(data: &Data, guild_id: GuildId) -> Option<Arc<SyncProgress>> {
-    let mut map = data.sync_progress.lock().unwrap();
-    let progress = map.get(&guild_id)?;
-    if progress.done.load(Ordering::Relaxed) {
-        map.remove(&guild_id);
-        None
-    } else {
-        Some(Arc::clone(progress))
-    }
-}

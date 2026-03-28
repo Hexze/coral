@@ -83,19 +83,11 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
         return interact::send_error(ctx, command, "Error", "This command can only be used in a server.").await;
     };
 
-    let has_perms = command.member.as_ref()
-        .and_then(|m| m.permissions)
-        .is_some_and(|p| p.manage_guild());
-    if !has_perms {
-        return interact::send_error(ctx, command, "Error", "You need Manage Server permission to use this command.").await;
-    }
-
     let repo = GuildConfigRepository::new(data.db.pool());
     let config = repo.upsert(guild_id.get() as i64, command.user.id.get() as i64).await?;
     let rules = repo.get_role_rules(guild_id.get() as i64).await?;
     let preview_ctx = build_preview_context(ctx, data, guild_id.get(), command.user.id.get()).await;
-    let progress = crate::sync::get_progress(data, guild_id);
-    let components = build_main_view(&config, &rules, guild_id.get(), preview_ctx.as_ref(), progress.as_deref());
+    let components = build_main_view(&config, &rules, guild_id.get(), preview_ctx.as_ref());
 
     command
         .create_response(
@@ -116,7 +108,6 @@ fn build_main_view(
     rules: &[GuildRoleRule],
     guild_id: u64,
     preview_ctx: Option<&serde_json::Value>,
-    progress: Option<&crate::sync::SyncProgress>,
 ) -> Vec<CreateComponent<'static>> {
     let nickname = match &config.nickname_template {
         Some(t) => match render_with_context(t, preview_ctx) {
@@ -157,7 +148,7 @@ fn build_main_view(
     )
     .placeholder("Select a link channel");
 
-    let mut parts = vec![
+    let parts = vec![
         text("## Server Configuration"),
         separator(),
         text("**Linked Role**"),
@@ -180,27 +171,13 @@ fn build_main_view(
         ])),
     ];
 
-    append_progress(&mut parts, progress);
     vec![CreateComponent::Container(CreateContainer::new(parts))]
-}
-
-
-fn append_progress(
-    parts: &mut Vec<CreateContainerComponent<'static>>,
-    progress: Option<&crate::sync::SyncProgress>,
-) {
-    if let Some(p) = progress {
-        let (processed, total, _) = p.snapshot();
-        parts.push(separator());
-        parts.push(text(format!("-# {} — {processed}/{total} members processed", p.label)));
-    }
 }
 
 
 fn build_autorole_view(
     guild_id: u64,
     extra: Vec<CreateContainerComponent<'static>>,
-    progress: Option<&crate::sync::SyncProgress>,
 ) -> CreateComponent<'static> {
     let select = CreateSelectMenu::new(
         format!("setup_role_config:{guild_id}"),
@@ -221,7 +198,6 @@ fn build_autorole_view(
                 .label("Back").style(ButtonStyle::Secondary),
         ]),
     ));
-    append_progress(&mut parts, progress);
 
     CreateComponent::Container(CreateContainer::new(parts))
 }
@@ -246,7 +222,6 @@ fn build_nickname_panel(
     guild_id: u64,
     template: Option<&str>,
     preview_ctx: Option<&serde_json::Value>,
-    progress: Option<&crate::sync::SyncProgress>,
 ) -> CreateComponent<'static> {
     let mut parts: Vec<CreateContainerComponent> = vec![text(build_nickname_help(preview_ctx))];
 
@@ -288,7 +263,6 @@ fn build_nickname_panel(
                 .label("Back").style(ButtonStyle::Secondary),
         ]),
     ));
-    append_progress(&mut parts, progress);
 
     CreateComponent::Container(CreateContainer::new(parts))
 }
@@ -414,23 +388,13 @@ pub async fn handle_link_role_select(
         .map(|r| RoleId::new(r as u64));
 
     repo.set_link_role(guild_id as i64, role_id.map(|r| r.get() as i64)).await?;
+    refresh_main(ctx, component, data, guild_id).await?;
 
     if old_role != role_id {
-        let ctx_clone = ctx.clone();
-        let data_clone = data.clone();
-        tokio::spawn(async move {
-            crate::sync::swap_role(
-                ctx_clone.clone(), data_clone.clone(), GuildId::new(guild_id),
-                old_role, role_id, crate::sync::RoleConfigField::Link,
-            )
-            .await;
-            crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id)).await;
-        });
-    } else {
-        spawn_guild_sync(ctx, data, guild_id);
+        spawn_role_swap(ctx, &component.token, data, guild_id, old_role, role_id, crate::sync::RoleConfigField::Link);
     }
 
-    refresh_main(ctx, component, data, guild_id).await
+    Ok(())
 }
 
 
@@ -462,23 +426,13 @@ pub async fn handle_unlinked_role_select(
         .map(|r| RoleId::new(r as u64));
 
     repo.set_unlinked_role(guild_id as i64, role_id.map(|r| r.get() as i64)).await?;
+    refresh_main(ctx, component, data, guild_id).await?;
 
     if old_role != role_id {
-        let ctx_clone = ctx.clone();
-        let data_clone = data.clone();
-        tokio::spawn(async move {
-            crate::sync::swap_role(
-                ctx_clone.clone(), data_clone.clone(), GuildId::new(guild_id),
-                old_role, role_id, crate::sync::RoleConfigField::Unlinked,
-            )
-            .await;
-            crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id)).await;
-        });
-    } else {
-        spawn_guild_sync(ctx, data, guild_id);
+        spawn_role_swap(ctx, &component.token, data, guild_id, old_role, role_id, crate::sync::RoleConfigField::Unlinked);
     }
 
-    refresh_main(ctx, component, data, guild_id).await
+    Ok(())
 }
 
 
@@ -508,10 +462,10 @@ pub async fn handle_nickname_button(
 ) -> Result<()> {
     let guild_id = interact::parse_id(&component.data.custom_id)
         .ok_or_else(|| anyhow!("invalid guild ID"))?;
+
     let (config, _) = fetch_config(data, guild_id).await?;
     let preview_ctx = build_preview_context(ctx, data, guild_id, component.user.id.get()).await;
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    let panel = build_nickname_panel(guild_id, config.nickname_template.as_deref(), preview_ctx.as_ref(), progress.as_deref());
+    let panel = build_nickname_panel(guild_id, config.nickname_template.as_deref(), preview_ctx.as_ref());
     interact::update_message(ctx, component, vec![panel]).await
 }
 
@@ -549,10 +503,10 @@ pub async fn handle_nickname_clear_button(
 ) -> Result<()> {
     let guild_id = interact::parse_id(&component.data.custom_id)
         .ok_or_else(|| anyhow!("invalid guild ID"))?;
-
     GuildConfigRepository::new(data.db.pool()).set_nickname_template(guild_id as i64, None).await?;
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    interact::update_message(ctx, component, vec![build_nickname_panel(guild_id, None, None, progress.as_deref())]).await
+    interact::update_message(ctx, component, vec![build_nickname_panel(guild_id, None, None)]).await?;
+    spawn_guild_sync(ctx, &component.token, data, guild_id);
+    Ok(())
 }
 
 
@@ -573,25 +527,24 @@ pub async fn handle_nickname_modal(
     }
 
     GuildConfigRepository::new(data.db.pool()).set_nickname_template(guild_id as i64, template).await?;
-    spawn_guild_sync(ctx, data, guild_id);
 
     let (config, _) = fetch_config(data, guild_id).await?;
     let preview_ctx = build_preview_context(ctx, data, guild_id, modal.user.id.get()).await;
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    let panel = build_nickname_panel(guild_id, config.nickname_template.as_deref(), preview_ctx.as_ref(), progress.as_deref());
-    interact::update_modal(ctx, modal, vec![panel]).await
+    let panel = build_nickname_panel(guild_id, config.nickname_template.as_deref(), preview_ctx.as_ref());
+    interact::update_modal(ctx, modal, vec![panel]).await?;
+    spawn_guild_sync(ctx, &modal.token, data, guild_id);
+    Ok(())
 }
 
 
 pub async fn handle_autorole_button(
     ctx: &Context,
     component: &ComponentInteraction,
-    data: &Data,
+    _data: &Data,
 ) -> Result<()> {
     let guild_id = interact::parse_id(&component.data.custom_id)
         .ok_or_else(|| anyhow!("invalid guild ID"))?;
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    interact::update_message(ctx, component, vec![build_autorole_view(guild_id, vec![], progress.as_deref())]).await
+    interact::update_message(ctx, component, vec![build_autorole_view(guild_id, vec![])]).await
 }
 
 
@@ -619,8 +572,7 @@ pub async fn handle_role_config_select(
     let (_, rules) = fetch_config(data, guild_id).await?;
     let existing = rules.iter().find(|r| r.role_id == role_id.get() as i64);
     let section = build_role_section(guild_id, role_id.get(), existing);
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    interact::update_message(ctx, component, vec![build_autorole_view(guild_id, section, progress.as_deref())]).await
+    interact::update_message(ctx, component, vec![build_autorole_view(guild_id, section)]).await
 }
 
 
@@ -716,8 +668,9 @@ pub async fn handle_add_rule_modal(
     }
 
     repo.add_role_rule(guild_id as i64, role_id as i64, &condition, 0).await?;
-    spawn_guild_sync(ctx, data, guild_id);
-    refresh_autorole_from_modal(ctx, modal, data, guild_id, Some(role_id)).await
+    refresh_autorole_from_modal(ctx, modal, data, guild_id, Some(role_id)).await?;
+    spawn_guild_sync(ctx, &modal.token, data, guild_id);
+    Ok(())
 }
 
 
@@ -735,14 +688,23 @@ pub async fn handle_rule_edit_modal(
     }
 
     let repo = GuildConfigRepository::new(data.db.pool());
-    repo.update_role_rule_condition(rule_id as i64, &condition).await?;
-    spawn_guild_sync(ctx, data, guild_id);
+    let rules = repo.get_role_rules(guild_id as i64).await?;
+    let rule = rules.iter().find(|r| r.id == rule_id as i64);
 
-    let role_id = repo.get_role_rules(guild_id as i64).await?
-        .iter()
-        .find(|r| r.id == rule_id as i64)
-        .map(|r| r.role_id as u64);
-    refresh_autorole_from_modal(ctx, modal, data, guild_id, role_id).await
+    if let Some(r) = rule {
+        if !can_manage_role(ctx, GuildId::new(guild_id), modal.user.id, RoleId::new(r.role_id as u64)).await {
+            return interact::send_modal_error(
+                ctx, modal, "Error", "You can only configure roles below your highest role.",
+            ).await;
+        }
+    }
+
+    repo.update_role_rule_condition(rule_id as i64, &condition).await?;
+
+    let role_id = rule.map(|r| r.role_id as u64);
+    refresh_autorole_from_modal(ctx, modal, data, guild_id, role_id).await?;
+    spawn_guild_sync(ctx, &modal.token, data, guild_id);
+    Ok(())
 }
 
 
@@ -753,15 +715,17 @@ pub async fn handle_nickname_reset_button(
 ) -> Result<()> {
     let guild_id = interact::parse_id(&component.data.custom_id)
         .ok_or_else(|| anyhow!("invalid guild ID"))?;
-    refresh_main(ctx, component, data, guild_id).await?;
+
+    let (config, _) = fetch_config(data, guild_id).await?;
+    let preview_ctx = build_preview_context(ctx, data, guild_id, component.user.id.get()).await;
+    let panel = build_nickname_panel(guild_id, config.nickname_template.as_deref(), preview_ctx.as_ref());
+    interact::update_message(ctx, component, vec![panel]).await?;
 
     let ctx_clone = ctx.clone();
     let data_clone = data.clone();
-    let gid = GuildId::new(guild_id);
-    tokio::spawn(async move {
-        crate::sync::clear_nicknames(ctx_clone, data_clone, gid).await;
+    spawn_bulk_update(ctx, &component.token, data, guild_id, "Clearing Display Names", move |cancel| {
+        Box::pin(async move { crate::sync::clear_nicknames(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await })
     });
-    spawn_progress_reporter(ctx, data, component, guild_id);
     Ok(())
 }
 
@@ -773,15 +737,17 @@ pub async fn handle_role_strip_button(
 ) -> Result<()> {
     let (guild_id, role_id) = interact::parse_compound_id(&component.data.custom_id)
         .ok_or_else(|| anyhow!("invalid compound ID"))?;
-    refresh_main(ctx, component, data, guild_id).await?;
+
+    let (_, rules) = fetch_config(data, guild_id).await?;
+    let existing = rules.iter().find(|r| r.role_id == role_id as i64);
+    let section = build_role_section(guild_id, role_id, existing);
+    interact::update_message(ctx, component, vec![build_autorole_view(guild_id, section)]).await?;
 
     let ctx_clone = ctx.clone();
     let data_clone = data.clone();
-    let gid = GuildId::new(guild_id);
-    tokio::spawn(async move {
-        crate::sync::clear_role(ctx_clone, data_clone, gid, RoleId::new(role_id)).await;
+    spawn_bulk_update(ctx, &component.token, data, guild_id, &format!("Stripping <@&{role_id}>"), move |cancel| {
+        Box::pin(async move { crate::sync::clear_role(ctx_clone, data_clone, GuildId::new(guild_id), RoleId::new(role_id), cancel).await })
     });
-    spawn_progress_reporter(ctx, data, component, guild_id);
     Ok(())
 }
 
@@ -793,15 +759,8 @@ async fn refresh_main(
     guild_id: u64,
 ) -> Result<()> {
     let (config, rules) = fetch_config(data, guild_id).await?;
-    let preview_ctx = build_preview_context(ctx, data, guild_id, component.user.id.get()).await;
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    let has_progress = progress.is_some();
-    let components = build_main_view(&config, &rules, guild_id, preview_ctx.as_ref(), progress.as_deref());
-    interact::update_message(ctx, component, components).await?;
-    if has_progress {
-        spawn_progress_reporter(ctx, data, component, guild_id);
-    }
-    Ok(())
+    let components = build_main_view(&config, &rules, guild_id, None);
+    interact::update_message(ctx, component, components).await
 }
 
 
@@ -813,7 +772,7 @@ async fn refresh_autorole(
     selected_role: Option<u64>,
 ) -> Result<()> {
     let (_, rules) = fetch_config(data, guild_id).await?;
-    interact::update_message(ctx, component, build_autorole_components(data, &rules, guild_id, selected_role)).await
+    interact::update_message(ctx, component, build_autorole_components(&rules, guild_id, selected_role)).await
 }
 
 
@@ -825,12 +784,11 @@ async fn refresh_autorole_from_modal(
     selected_role: Option<u64>,
 ) -> Result<()> {
     let (_, rules) = fetch_config(data, guild_id).await?;
-    interact::update_modal(ctx, modal, build_autorole_components(data, &rules, guild_id, selected_role)).await
+    interact::update_modal(ctx, modal, build_autorole_components(&rules, guild_id, selected_role)).await
 }
 
 
 fn build_autorole_components(
-    data: &Data,
     rules: &[GuildRoleRule],
     guild_id: u64,
     selected_role: Option<u64>,
@@ -841,8 +799,7 @@ fn build_autorole_components(
             build_role_section(guild_id, role_id, existing)
         })
         .unwrap_or_default();
-    let progress = crate::sync::get_progress(data, GuildId::new(guild_id));
-    vec![build_autorole_view(guild_id, section, progress.as_deref())]
+    vec![build_autorole_view(guild_id, section)]
 }
 
 
@@ -918,41 +875,7 @@ async fn fetch_config(
 }
 
 
-fn spawn_guild_sync(ctx: &Context, data: &Data, guild_id: u64) {
-    let ctx = ctx.clone();
-    let data = data.clone();
-    tokio::spawn(crate::sync::sync_guild(ctx, data, GuildId::new(guild_id)));
-}
 
-
-fn spawn_progress_reporter(
-    ctx: &Context,
-    data: &Data,
-    component: &ComponentInteraction,
-    guild_id: u64,
-) {
-    let ctx = ctx.clone();
-    let data = data.clone();
-    let interaction = component.clone();
-
-    tokio::spawn(async move {
-        let gid = GuildId::new(guild_id);
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let progress = crate::sync::get_progress(&data, gid);
-            let Ok((config, rules)) = fetch_config(&data, guild_id).await else { break };
-            let preview_ctx = build_preview_context(&ctx, &data, guild_id, interaction.user.id.get()).await;
-            let components = build_main_view(&config, &rules, guild_id, preview_ctx.as_ref(), progress.as_deref());
-            let edit = EditInteractionResponse::new()
-                .flags(MessageFlags::IS_COMPONENTS_V2)
-                .components(components);
-            let _ = interaction.edit_response(&ctx.http, edit).await;
-            if progress.is_none() {
-                break;
-            }
-        }
-    });
-}
 
 
 async fn can_manage_role(
@@ -976,4 +899,132 @@ async fn can_manage_role(
         .max()
         .unwrap_or(0);
     target.position < user_highest
+}
+
+
+fn spawn_bulk_update(
+    ctx: &Context,
+    token: &str,
+    data: &Data,
+    guild_id: u64,
+    heading: &str,
+    task: impl FnOnce(crate::sync::CancelToken) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + 'static,
+) {
+    let cancel = crate::sync::cancel_token();
+    data.sync_cancel_tokens.lock().unwrap().insert(GuildId::new(guild_id), cancel.clone());
+
+    let http = ctx.http.clone();
+    let token = token.to_string();
+    let heading = heading.to_string();
+
+    let start_components = vec![CreateComponent::Container(CreateContainer::new(vec![
+        text(format!("### {heading}")),
+        text("Updating members. This may take a long time if your server has many members."),
+        separator(),
+        CreateContainerComponent::ActionRow(CreateActionRow::buttons(vec![
+            CreateButton::new(format!("setup_sync_cancel:{guild_id}"))
+                .label("Cancel").style(ButtonStyle::Danger),
+        ])),
+    ]))];
+
+    let done_components = vec![CreateComponent::Container(CreateContainer::new(vec![
+        text(format!("### {heading}")),
+        text("Done."),
+    ]))];
+
+    let cancelled_components = vec![CreateComponent::Container(CreateContainer::new(vec![
+        text(format!("### {heading}")),
+        text("Cancelled."),
+    ]))];
+
+    tokio::spawn(async move {
+        let followup = http.create_followup_message(
+            &token,
+            &CreateInteractionResponseFollowup::new()
+                .flags(MessageFlags::IS_COMPONENTS_V2 | MessageFlags::EPHEMERAL)
+                .components(start_components),
+            Vec::<CreateAttachment>::new(),
+        ).await;
+
+        task(cancel.clone()).await;
+
+        if let Ok(msg) = followup {
+            let final_components = if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                cancelled_components
+            } else {
+                done_components
+            };
+            let _ = http.edit_followup_message(
+                &token, msg.id,
+                &EditInteractionResponse::new()
+                    .flags(MessageFlags::IS_COMPONENTS_V2)
+                    .components(final_components),
+                Vec::<CreateAttachment>::new(),
+            ).await;
+        }
+    });
+}
+
+
+pub async fn handle_sync_cancel_button(
+    ctx: &Context,
+    component: &ComponentInteraction,
+    data: &Data,
+) -> Result<()> {
+    let guild_id = interact::parse_id(&component.data.custom_id)
+        .ok_or_else(|| anyhow!("invalid guild ID"))?;
+
+    if let Some(token) = data.sync_cancel_tokens.lock().unwrap().remove(&GuildId::new(guild_id)) {
+        token.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    component.create_response(
+        &ctx.http,
+        CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .flags(MessageFlags::IS_COMPONENTS_V2)
+                .components(vec![CreateComponent::Container(CreateContainer::new(vec![
+                    text("Cancelling..."),
+                ]))]),
+        ),
+    ).await?;
+    Ok(())
+}
+
+
+fn spawn_guild_sync(ctx: &Context, token: &str, data: &Data, guild_id: u64) {
+    let ctx_clone = ctx.clone();
+    let data_clone = data.clone();
+    spawn_bulk_update(ctx, token, data, guild_id, "Changing Display Names", move |cancel| {
+        Box::pin(async move {
+            crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await;
+        })
+    });
+}
+
+
+fn spawn_role_swap(
+    ctx: &Context,
+    token: &str,
+    data: &Data,
+    guild_id: u64,
+    old_role: Option<RoleId>,
+    new_role: Option<RoleId>,
+    config_field: crate::sync::RoleConfigField,
+) {
+    let heading = match (old_role, new_role) {
+        (Some(old), Some(new)) => format!("<@&{old}> \u{2192} <@&{new}>"),
+        (Some(old), None) => format!("Removing <@&{old}>"),
+        (None, Some(new)) => format!("Assigning <@&{new}>"),
+        (None, None) => return,
+    };
+
+    let ctx_clone = ctx.clone();
+    let data_clone = data.clone();
+    spawn_bulk_update(ctx, token, data, guild_id, &heading, move |cancel| {
+        Box::pin(async move {
+            crate::sync::swap_role(ctx_clone.clone(), data_clone.clone(), GuildId::new(guild_id), old_role, new_role, config_field, cancel.clone()).await;
+            crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await;
+        })
+    });
 }
