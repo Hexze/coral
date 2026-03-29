@@ -113,6 +113,15 @@ impl<'a> DeveloperKeyRepository<'a> {
             .map(|r| r.rows_affected() > 0)
     }
 
+    pub async fn set_rate_limit(&self, member_id: i64, rate_limit: i32) -> Result<bool, sqlx::Error> {
+        sqlx::query("UPDATE developer_keys SET rate_limit = $2 WHERE member_id = $1")
+            .bind(member_id)
+            .bind(rate_limit)
+            .execute(self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+    }
+
     pub async fn delete(&self, member_id: i64) -> Result<bool, sqlx::Error> {
         sqlx::query("DELETE FROM developer_keys WHERE member_id = $1")
             .bind(member_id)

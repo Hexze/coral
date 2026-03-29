@@ -151,8 +151,9 @@ pub(crate) async fn build_main_view(
                 let perm_display = if perm_labels.is_empty() { "None".into() } else { perm_labels.join(", ") };
 
                 parts.push(text(format!(
-                    "### Developer Key\n{status}\n-# {} requests · {perm_display}",
-                    format_number(dk.request_count as u64)
+                    "### Developer Key\n{status}\n-# {} requests · {} req/5min · {perm_display}",
+                    format_number(dk.request_count as u64),
+                    format_number(dk.rate_limit as u64),
                 )));
 
                 let lock_button = if dk.locked {
@@ -164,8 +165,10 @@ pub(crate) async fn build_main_view(
                 };
                 let delete_button = CreateButton::new(format!("manage_delete_dev:{target_id}"))
                     .label("Delete").style(ButtonStyle::Danger).disabled(!can_modify);
+                let rate_limit_button = CreateButton::new(format!("manage_dev_rate_limit:{target_id}"))
+                    .label("Rate Limit").style(ButtonStyle::Secondary).disabled(!can_modify);
                 parts.push(CreateContainerComponent::ActionRow(
-                    CreateActionRow::buttons(vec![lock_button, delete_button]),
+                    CreateActionRow::buttons(vec![lock_button, delete_button, rate_limit_button]),
                 ));
 
                 let perm_options: Vec<_> = permissions::ALL.iter().map(|&p| {
@@ -549,6 +552,67 @@ pub async fn handle_delete_dev_key(ctx: &Context, component: &ComponentInteracti
 
     DeveloperKeyRepository::new(data.db.pool()).delete(m.id).await?;
     refresh_main(ctx, component, data, invoker_rank, target_id).await
+}
+
+
+pub async fn handle_dev_rate_limit_button(ctx: &Context, component: &ComponentInteraction, data: &Data) -> Result<()> {
+    let target_id = interact::parse_id(&component.data.custom_id)
+        .ok_or_else(|| anyhow!("Invalid button ID"))?;
+    let invoker_id = component.user.id.get();
+    let (invoker_rank, target, target_rank) = fetch_context(data, invoker_id, target_id).await?;
+
+    if !require_mod_over(invoker_rank, target_rank) {
+        return interact::send_component_error(ctx, component, "Error", "Insufficient permissions").await;
+    }
+    let Some(m) = target else { return Ok(()) };
+
+    let current = DeveloperKeyRepository::new(data.db.pool())
+        .get_by_member_id(m.id).await?.map(|dk| dk.rate_limit.to_string()).unwrap_or_default();
+
+    let input = CreateInputText::new(InputTextStyle::Short, "rate_limit")
+        .placeholder("e.g. 3000")
+        .value(current)
+        .min_length(1)
+        .max_length(10);
+    let modal = CreateModal::new(format!("manage_dev_rate_limit_modal:{target_id}"), "Set Rate Limit")
+        .components(vec![CreateModalComponent::Label(
+            CreateLabel::input_text("Requests per 5 minutes", input),
+        )]);
+    component.create_response(&ctx.http, CreateInteractionResponse::Modal(modal)).await?;
+    Ok(())
+}
+
+
+pub async fn handle_dev_rate_limit_modal(ctx: &Context, modal: &ModalInteraction, data: &Data) -> Result<()> {
+    let target_id = interact::parse_id(&modal.data.custom_id)
+        .ok_or_else(|| anyhow!("Invalid modal ID"))?;
+    let invoker_id = modal.user.id.get();
+    let (invoker_rank, target, target_rank) = fetch_context(data, invoker_id, target_id).await?;
+
+    if !require_mod_over(invoker_rank, target_rank) {
+        return interact::send_modal_error(ctx, modal, "Error", "Insufficient permissions").await;
+    }
+    let Some(m) = target else { return Ok(()) };
+
+    let value = interact::extract_modal_value(&modal.data.components, "rate_limit");
+
+    let Ok(rate_limit) = value.trim().parse::<i32>() else {
+        return interact::send_modal_error(ctx, modal, "Error", "Invalid number").await;
+    };
+
+    if rate_limit < 0 {
+        return interact::send_modal_error(ctx, modal, "Error", "Rate limit must be positive").await;
+    }
+
+    DeveloperKeyRepository::new(data.db.pool()).set_rate_limit(m.id, rate_limit).await?;
+
+    let components = build_main_view(data, invoker_rank, target_id).await;
+    modal.create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(
+        CreateInteractionResponseMessage::new()
+            .flags(MessageFlags::IS_COMPONENTS_V2 | MessageFlags::EPHEMERAL)
+            .components(components),
+    )).await?;
+    Ok(())
 }
 
 

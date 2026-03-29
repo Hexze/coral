@@ -182,8 +182,13 @@ pub(crate) async fn build_dashboard_view(
         ),
     )));
 
+    let personal_limit = match member.access_level {
+        4.. => 3000,
+        2..=3 => 1200,
+        _ => 600,
+    };
     parts.push(text(format!(
-        "-# {} · {} requests · Registered <t:{}:D>",
+        "-# {} · {} requests · {personal_limit} req/5min · Registered <t:{}:D>",
         rank.label(),
         format_number(member.request_count as u64),
         member.join_date.timestamp()
@@ -219,8 +224,9 @@ pub(crate) async fn build_dashboard_view(
                 .collect();
             let perm_display = if perm_labels.is_empty() { "None".into() } else { perm_labels.join(", ") };
             parts.push(text(format!(
-                "-# {} requests · {perm_display}",
+                "-# {} requests · {} req/5min · {perm_display}",
                 format_number(dk.request_count as u64),
+                format_number(dk.rate_limit as u64),
             )));
         }
         None => {
