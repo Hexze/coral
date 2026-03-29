@@ -56,8 +56,13 @@ async fn init_data() -> Result<Data> {
     let blacklist_channel_id = parse_channel_id("BLACKLIST_CHANNEL_ID");
     let mod_channel_id = parse_channel_id("MOD_CHANNEL_ID");
 
+    tracing::info!("Connecting to database...");
     let db = Database::connect(&database_url).await?;
+    tracing::info!("Running migrations...");
+    db.migrate().await?;
+    tracing::info!("Connecting to Redis...");
     let redis = RedisPool::connect(&redis_url).await?;
+    tracing::info!("Initializing services...");
     let event_publisher = EventPublisher::new(redis.clone());
     let api = CoralApiClient::new(api_url, api_key);
     let skin_provider: Arc<dyn SkinProvider> =

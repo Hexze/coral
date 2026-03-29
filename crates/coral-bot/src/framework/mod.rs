@@ -131,6 +131,7 @@ impl Handler {
             commands::admin::setup::register(),
             commands::admin::strike::register(),
             commands::blacklist::evidence::register(),
+            commands::user::reminder::register(),
         ];
 
         commands
@@ -165,6 +166,7 @@ impl Handler {
             "setup" => commands::admin::setup::run(ctx, command, &self.data).await,
             "strike" => commands::admin::strike::run(ctx, command, &self.data).await,
             "confirm" => commands::blacklist::evidence::run(ctx, command, &self.data).await,
+            "reminder" => commands::user::reminder::run(ctx, command, &self.data).await,
             _ => Ok(()),
         }
     }
@@ -433,6 +435,12 @@ impl Handler {
             _ if id.starts_with("setup_cancel:") => {
                 commands::admin::setup::handle_cancel_button(ctx, component, &self.data).await
             }
+            _ if id.starts_with("reminder_cancel_select:") => {
+                commands::user::reminder::handle_cancel_select(ctx, component, &self.data).await
+            }
+            _ if id.starts_with("reminder_snooze:") => {
+                commands::user::reminder::handle_snooze(ctx, component, &self.data).await
+            }
             _ => {
                 tracing::warn!("unhandled component interaction: {id}");
                 Ok(())
@@ -532,6 +540,7 @@ impl EventHandler for Handler {
                 }
 
                 crate::events::spawn_subscriber(ctx.clone(), self.data.clone());
+                crate::events::spawn_reminder_poller(ctx.clone(), self.data.clone());
             }
             FullEvent::InteractionCreate { interaction, .. } => {
                 self.handle_interaction(ctx, interaction.clone()).await;

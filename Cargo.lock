@@ -557,13 +557,14 @@ dependencies = [
 [[package]]
 name = "clients"
 version = "0.1.0"
+source = "git+https://github.com/Hexze/coral-clients?branch=master#e432e8ada00456f65832c201ae976345b5bf428f"
 dependencies = [
  "async-trait",
  "base64",
- "hypixel",
+ "hypixel 0.1.0 (git+https://github.com/Hexze/coral?branch=master)",
  "image",
  "moka",
- "render",
+ "render 0.1.0 (git+https://github.com/Hexze/coral?branch=master)",
  "reqwest",
  "serde",
  "serde_json",
@@ -676,7 +677,7 @@ dependencies = [
  "coral-redis",
  "database",
  "dotenvy",
- "hypixel",
+ "hypixel 0.1.0",
  "image",
  "redis",
  "serde",
@@ -700,10 +701,10 @@ dependencies = [
  "coral-redis",
  "database",
  "dotenvy",
- "hypixel",
+ "hypixel 0.1.0",
  "image",
  "mctext",
- "render",
+ "render 0.1.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -963,7 +964,7 @@ dependencies = [
  "blacklist",
  "chrono",
  "dotenvy",
- "hypixel",
+ "hypixel 0.1.0",
  "serde",
  "serde_json",
  "sqlx",
@@ -1874,6 +1875,17 @@ dependencies = [
 [[package]]
 name = "hypixel"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "hypixel"
+version = "0.1.0"
+source = "git+https://github.com/Hexze/coral?branch=master#dd778bcf890a75f50f635812ae45a272c0e49943"
 dependencies = [
  "chrono",
  "serde",
@@ -3363,13 +3375,31 @@ dependencies = [
  "chrono",
  "dotenvy",
  "glam",
- "hypixel",
+ "hypixel 0.1.0",
  "image",
  "mctext",
  "pollster",
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 2.0.17",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "render"
+version = "0.1.0"
+source = "git+https://github.com/Hexze/coral?branch=master#dd778bcf890a75f50f635812ae45a272c0e49943"
+dependencies = [
+ "bytemuck",
+ "chrono",
+ "glam",
+ "hypixel 0.1.0 (git+https://github.com/Hexze/coral?branch=master)",
+ "image",
+ "mctext",
+ "pollster",
+ "serde",
  "thiserror 2.0.17",
  "tracing",
  "wgpu",
