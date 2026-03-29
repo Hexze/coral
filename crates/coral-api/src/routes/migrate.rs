@@ -26,6 +26,9 @@ enum Payload {
     #[serde(rename = "wipe_blacklist")]
     WipeBlacklist,
 
+    #[serde(rename = "wipe_cache")]
+    WipeCache,
+
     #[serde(rename = "members")]
     Members { data: Vec<MemberPayload> },
 
@@ -93,6 +96,7 @@ async fn migrate(
     match payload {
         Payload::WipeMembers => wipe_members(pool).await,
         Payload::WipeBlacklist => wipe_blacklist(pool).await,
+        Payload::WipeCache => wipe_cache(pool).await,
         Payload::Members { data } => migrate_members(pool, &data).await,
         Payload::Blacklist { data } => migrate_blacklist(pool, &data).await,
         Payload::Snapshots { data } => migrate_snapshots(pool, &data).await,
@@ -108,6 +112,18 @@ async fn wipe_members(pool: &sqlx::PgPool) -> std::result::Result<Json<Result>, 
 
     let total = (members + alts) as usize;
     info!("Wiped members: {members} members, {alts} alts");
+    Ok(Json(Result { migrated: total, errors: 0 }))
+}
+
+
+async fn wipe_cache(pool: &sqlx::PgPool) -> std::result::Result<Json<Result>, ApiError> {
+    let snapshots = sqlx::query("DELETE FROM player_snapshots")
+        .execute(pool).await?.rows_affected();
+    let sessions = sqlx::query("DELETE FROM session_markers")
+        .execute(pool).await?.rows_affected();
+
+    let total = (snapshots + sessions) as usize;
+    info!("Wiped cache: {snapshots} snapshots, {sessions} session markers");
     Ok(Json(Result { migrated: total, errors: 0 }))
 }
 

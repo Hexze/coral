@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 CORAL_API = "https://api.urchin.gg/v3"
 BATCH_SIZE = 200
+SNAPSHOT_BATCH_SIZE = 1000
 
 VALID_TAGS = {"sniper", "blatant_cheater", "closet_cheater", "confirmed_cheater"}
 
@@ -28,7 +29,7 @@ def post(api_key, payload):
         f"{CORAL_API}/migrate",
         json=payload,
         headers={"X-API-Key": api_key},
-        timeout=120,
+        timeout=300,
     )
     r.raise_for_status()
     return r.json()
@@ -229,16 +230,219 @@ def migrate_blacklist(db, api_key):
     print(f"Blacklist done: {total} migrated, {errors} errors")
 
 
+CUTOFF_TIMESTAMP = 1774780408.0  # 2026-03-29T10:33:28 UTC — when V1 switched to coral
+
+MODE_MAP = {
+    "overall": "",
+    "solos": "eight_one_",
+    "doubles": "eight_two_",
+    "threes": "four_three_",
+    "fours": "four_four_",
+    "4v4": "two_four_",
+    "fourvfour": "two_four_",
+}
+
+
+def calculate_delta(old, new):
+    if isinstance(old, dict) and isinstance(new, dict):
+        delta = {}
+        for key, new_val in new.items():
+            if key in old:
+                sub = calculate_delta(old[key], new_val)
+                if sub is not None:
+                    delta[key] = sub
+            else:
+                delta[key] = new_val
+        return delta if delta else None
+    if old == new:
+        return None
+    return new
+
+
+def reverse_mode_stats(mode_data, prefix):
+    """Convert V1 transformed mode stats back to flat Hypixel Bedwars keys."""
+    if not mode_data:
+        return {}
+    bw = {}
+    for key in ("wins", "losses", "final_kills", "final_deaths", "beds_broken", "beds_lost", "games_played"):
+        val = mode_data.get(key, 0)
+        if val and val != 0:
+            bw[f"{prefix}{key}_bedwars"] = val
+
+    ws = mode_data.get("winstreak")
+    if ws is not None and ws != "?":
+        ws_key = f"{prefix}winstreak" if prefix else "winstreak"
+        bw[ws_key] = ws
+
+    for group in ("kills", "deaths"):
+        sub = mode_data.get(group, {})
+        for sub_key, sub_val in sub.items():
+            if sub_val and sub_val != 0:
+                bw[f"{prefix}{sub_key}_bedwars"] = sub_val
+
+    resources = mode_data.get("resources", {})
+    resource_map = {
+        "emeralds_collected": "emerald_resources_collected",
+        "gold_collected": "gold_resources_collected",
+        "diamonds_collected": "diamond_resources_collected",
+        "iron_collected": "iron_resources_collected",
+    }
+    for rkey, hypixel_key in resource_map.items():
+        val = resources.get(rkey, 0)
+        if val and val != 0:
+            bw[f"{prefix}{hypixel_key}_bedwars"] = val
+
+    return bw
+
+
+def reverse_transform(player_data):
+    """Convert V1 transformed player data back to raw Hypixel player JSON."""
+    if not player_data:
+        return None
+    bw_section = player_data.get("bedwars", {})
+    modes = bw_section.get("modes", {})
+
+    bedwars = {}
+    exp = bw_section.get("experience", 0)
+    if exp:
+        bedwars["Experience"] = exp
+
+    for mode_name, prefix in MODE_MAP.items():
+        bedwars.update(reverse_mode_stats(modes.get(mode_name, {}), prefix))
+
+    player = {
+        "displayname": player_data.get("display_name"),
+        "networkExp": player_data.get("network_exp"),
+        "achievementPoints": player_data.get("achievement_points"),
+        "firstLogin": player_data.get("first_login"),
+        "lastLogin": player_data.get("last_login"),
+        "lastLogout": player_data.get("last_logout"),
+        "karma": player_data.get("karma"),
+        "stats": {"Bedwars": bedwars},
+    }
+
+    ranks_gifted = player_data.get("ranks_gifted", 0)
+    if ranks_gifted:
+        player["giftingMeta"] = {"ranksGiven": ranks_gifted}
+
+    stars = bw_section.get("stars")
+    if stars is not None:
+        try:
+            star_val = int(str(stars).replace("✫", "").replace("✪", "").replace("⚝", "").strip())
+            player["achievements"] = {"bedwars_level": star_val}
+        except (ValueError, TypeError):
+            pass
+
+    return {k: v for k, v in player.items() if v is not None}
+
+
+def collect_player_snapshots(uuid, entries):
+    """Sort chronologically, reverse-transform, and delta-compress a single player's snapshots."""
+    valid = []
+    for entry in entries:
+        ts = entry.get("timestamp")
+        if not ts or ts >= CUTOFF_TIMESTAMP:
+            continue
+        player_data = entry.get("player")
+        if player_data is None:
+            continue
+        raw = reverse_transform(player_data)
+        if not raw:
+            continue
+        valid.append((ts, raw, player_data.get("display_name", "")))
+
+    valid.sort(key=lambda x: x[0])
+
+    snapshots = []
+    previous = None
+    for ts, transformed, username in valid:
+        is_baseline = previous is None
+        if is_baseline:
+            data = transformed
+        else:
+            delta = calculate_delta(previous, transformed)
+            if delta is None:
+                continue
+            data = delta
+
+        iso_ts = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        snapshots.append({
+            "uuid": uuid,
+            "timestamp": iso_ts,
+            "username": (username or "")[:16],
+            "is_baseline": is_baseline,
+            "data": data,
+        })
+        previous = transformed
+
+    return snapshots
+
+
+def flush_batch(api_key, batch):
+    total = 0
+    errs = 0
+    for i in range(0, len(batch), SNAPSHOT_BATCH_SIZE):
+        chunk = batch[i:i + SNAPSHOT_BATCH_SIZE]
+        try:
+            result = post(api_key, {"type": "snapshots", "data": chunk})
+            total += result["migrated"]
+            errs += result["errors"]
+        except Exception as e:
+            print(f"  Batch error: {e}")
+            errs += len(chunk)
+    return total, errs
+
+
+PLAYER_BATCH_SIZE = 2000
+
+def migrate_snapshots(db, api_key):
+    print("Migrating snapshots...")
+    batch = []
+    total = 0
+    errors = 0
+    players = 0
+
+    for doc in db.cache.find({}, no_cursor_timeout=True).batch_size(100):
+        uuid = strip_uuid(doc.get("uuid"))
+        if not uuid or len(uuid) != 32:
+            continue
+
+        snapshots = collect_player_snapshots(uuid, doc.get("data", []) or [])
+        batch.extend(snapshots)
+        players += 1
+
+        if players % PLAYER_BATCH_SIZE == 0:
+            t, e = flush_batch(api_key, batch)
+            total += t
+            errors += e
+            batch = []
+            print(f"  {players} players ({total} snapshots, {errors} errors)")
+
+    if batch:
+        t, e = flush_batch(api_key, batch)
+        total += t
+        errors += e
+
+    print(f"Snapshots done: {total} snapshots across {players} players ({errors} errors)")
+
+
 def main():
     api_key, flags = parse_args()
-    if not api_key or not flags - {"--wipe"}:
-        print("Usage: python3 migrate_to_coral.py <INTERNAL_API_KEY> [--wipe] [--members] [--blacklist]")
-        print("  --wipe        Wipe all migrated data first")
+    actions = flags & {"--members", "--blacklist", "--cache", "--snapshots"}
+    if not api_key or not actions:
+        print("Usage: python3 migrate_to_coral.py <INTERNAL_API_KEY> [--wipe] [--members] [--blacklist] [--cache] [--snapshots]")
+        print("  --wipe        Wipe data before migrating")
         print("  --members     Migrate members")
         print("  --blacklist   Migrate blacklist")
+        print("  --cache       Wipe cache (snapshots + sessions)")
+        print("  --snapshots   Migrate V1 cache to coral snapshots")
         sys.exit(1)
 
     db = MongoClient("mongodb://localhost:27017").urchindb
+
+    if "--cache" in flags:
+        print("Wiping cache...")
+        print(f"  {post(api_key, {'type': 'wipe_cache'})}")
 
     if "--members" in flags:
         if "--wipe" in flags:
@@ -251,6 +455,9 @@ def main():
             print("Wiping blacklist...")
             print(f"  {post(api_key, {'type': 'wipe_blacklist'})}")
         migrate_blacklist(db, api_key)
+
+    if "--snapshots" in flags:
+        migrate_snapshots(db, api_key)
 
     print("Done!")
 
