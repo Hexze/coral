@@ -18,7 +18,6 @@ use database::{
 use crate::{expr, framework::Data};
 
 pub const NICKNAME_MAX_LEN: usize = 32;
-const NICKNAME_SEPARATOR: &str = " | ";
 const BULK_CONCURRENCY: usize = 5;
 const REFRESH_THRESHOLD: Duration = Duration::from_secs(4 * 3600);
 const MEMBERS_PER_PAGE: u16 = 1000;
@@ -55,17 +54,7 @@ pub fn build_nickname(prefix: &str, current_nick: Option<&str>) -> String {
         return truncate_nick(current, NICKNAME_MAX_LEN);
     }
 
-    let custom = current
-        .strip_prefix(prefix.split(NICKNAME_SEPARATOR).next().unwrap_or(prefix))
-        .map(|rest| rest.trim_start_matches(NICKNAME_SEPARATOR).trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(current.trim());
-
-    if custom.is_empty() || prefix.len() + NICKNAME_SEPARATOR.len() >= NICKNAME_MAX_LEN {
-        return prefix.to_string();
-    }
-
-    truncate_nick(&format!("{prefix}{NICKNAME_SEPARATOR}{custom}"), NICKNAME_MAX_LEN)
+    prefix.to_string()
 }
 
 
