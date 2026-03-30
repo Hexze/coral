@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-FROM lukemathwalker/cargo-chef:0.1.75-rust-1.92-bookworm AS chef
+FROM rust:1.92-bookworm AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 FROM chef AS planner
