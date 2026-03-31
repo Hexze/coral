@@ -378,13 +378,14 @@ def collect_player_snapshots(uuid, entries):
     return snapshots
 
 
-def flush_batch(api_key, batch):
+def flush_batch(api_key, batch, replace=False):
     total = 0
     errs = 0
+    payload_type = "replace_snapshots" if replace else "snapshots"
     for i in range(0, len(batch), SNAPSHOT_BATCH_SIZE):
         chunk = batch[i:i + SNAPSHOT_BATCH_SIZE]
         try:
-            result = post(api_key, {"type": "snapshots", "data": chunk})
+            result = post(api_key, {"type": payload_type, "data": chunk})
             total += result["migrated"]
             errs += result["errors"]
         except Exception as e:
@@ -395,8 +396,9 @@ def flush_batch(api_key, batch):
 
 PLAYER_BATCH_SIZE = 2000
 
-def migrate_snapshots(db, api_key):
-    print("Migrating snapshots...")
+def migrate_snapshots(db, api_key, replace=False):
+    mode = "Replacing" if replace else "Migrating"
+    print(f"{mode} snapshots...")
     batch = []
     total = 0
     errors = 0
@@ -412,14 +414,14 @@ def migrate_snapshots(db, api_key):
         players += 1
 
         if players % PLAYER_BATCH_SIZE == 0:
-            t, e = flush_batch(api_key, batch)
+            t, e = flush_batch(api_key, batch, replace)
             total += t
             errors += e
             batch = []
             print(f"  {players} players ({total} snapshots, {errors} errors)")
 
     if batch:
-        t, e = flush_batch(api_key, batch)
+        t, e = flush_batch(api_key, batch, replace)
         total += t
         errors += e
 
@@ -428,14 +430,15 @@ def migrate_snapshots(db, api_key):
 
 def main():
     api_key, flags = parse_args()
-    actions = flags & {"--members", "--blacklist", "--cache", "--snapshots"}
+    actions = flags & {"--members", "--blacklist", "--cache", "--snapshots", "--replace-snapshots"}
     if not api_key or not actions:
-        print("Usage: python3 migrate_to_coral.py <INTERNAL_API_KEY> [--wipe] [--members] [--blacklist] [--cache] [--snapshots]")
-        print("  --wipe        Wipe data before migrating")
-        print("  --members     Migrate members")
-        print("  --blacklist   Migrate blacklist")
-        print("  --cache       Wipe cache (snapshots + sessions)")
-        print("  --snapshots   Migrate V1 cache to coral snapshots")
+        print("Usage: python3 migrate_to_coral.py <INTERNAL_API_KEY> [--wipe] [--members] [--blacklist] [--cache] [--snapshots] [--replace-snapshots]")
+        print("  --wipe               Wipe data before migrating")
+        print("  --members            Migrate members")
+        print("  --blacklist          Migrate blacklist")
+        print("  --cache              Wipe cache (snapshots + sessions)")
+        print("  --snapshots          Migrate V1 cache to coral snapshots")
+        print("  --replace-snapshots  Re-migrate snapshots, deleting coral-originated ones per player")
         sys.exit(1)
 
     db = MongoClient("mongodb://localhost:27017").urchindb
@@ -456,7 +459,9 @@ def main():
             print(f"  {post(api_key, {'type': 'wipe_blacklist'})}")
         migrate_blacklist(db, api_key)
 
-    if "--snapshots" in flags:
+    if "--replace-snapshots" in flags:
+        migrate_snapshots(db, api_key, replace=True)
+    elif "--snapshots" in flags:
         migrate_snapshots(db, api_key)
 
     print("Done!")
