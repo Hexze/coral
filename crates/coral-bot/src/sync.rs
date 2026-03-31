@@ -177,8 +177,8 @@ pub async fn sync_user(ctx: Context, data: Data, user_id: UserId) {
 }
 
 
-pub async fn sync_guild(ctx: Context, data: Data, guild_id: GuildId, cancel: CancelToken) {
-    if let Err(e) = try_sync_guild(&ctx, &data, guild_id, &cancel).await {
+pub async fn sync_guild_fresh(ctx: Context, data: Data, guild_id: GuildId, cancel: CancelToken) {
+    if let Err(e) = try_sync_guild(&ctx, &data, guild_id, &cancel, true).await {
         tracing::warn!("Guild sync failed for {guild_id}: {e}");
     }
 }
@@ -220,11 +220,31 @@ async fn try_sync_from_message(
 }
 
 
+async fn resolve_data(data: &Data, uuid: &str, fresh: bool) -> Option<Value> {
+    let cache = CacheRepository::new(data.db.pool());
+
+    if fresh {
+        let needs_refresh = match cache.get_latest_non_migration_timestamp(uuid).await.ok().flatten() {
+            Some(ts) => (Utc::now() - ts).num_seconds() > REFRESH_THRESHOLD.as_secs() as i64,
+            None => true,
+        };
+        if needs_refresh {
+            match data.api.get_player_stats(uuid).await {
+                Ok(response) => return response.hypixel,
+                Err(e) => tracing::debug!("Hypixel refresh failed for {uuid}, using cache: {e}"),
+            }
+        }
+    }
+
+    cache.get_latest_snapshot(uuid).await.ok().flatten()
+}
+
 async fn try_sync_guild(
     ctx: &Context,
     data: &Data,
     guild_id: GuildId,
     cancel: &CancelToken,
+    fresh: bool,
 ) -> Result<()> {
     let config_repo = GuildConfigRepository::new(data.db.pool());
     let config = match config_repo.get(guild_id.get() as i64).await? {
@@ -239,7 +259,7 @@ async fn try_sync_guild(
     let mut updates = 0usize;
     for chunk in non_bots.chunks(MEMBERS_PER_PAGE as usize) {
         if is_cancelled(cancel) { break }
-        let (_, page_updates) = sync_member_batch(ctx, data, guild_id, chunk, &config, &rules, cancel).await;
+        let (_, page_updates) = sync_member_batch(ctx, data, guild_id, chunk, &config, &rules, cancel, fresh).await;
         updates += page_updates;
     }
 
@@ -256,6 +276,7 @@ async fn sync_member_batch(
     config: &GuildConfig,
     rules: &[GuildRoleRule],
     cancel: &CancelToken,
+    fresh: bool,
 ) -> (usize, usize) {
     let members_repo = MemberRepository::new(data.db.pool());
     let discord_ids: Vec<i64> = members.iter().map(|m| m.user.id.get() as i64).collect();
@@ -283,10 +304,9 @@ async fn sync_member_batch(
 
         tasks.spawn(async move {
             let _permit = permit;
-            let cache = CacheRepository::new(data.db.pool());
 
             let result = match uuid {
-                Some(uuid) => match cache.get_latest_snapshot(&uuid).await.ok().flatten() {
+                Some(uuid) => match resolve_data(&data, &uuid, fresh).await {
                     Some(hd) => sync_member(&ctx, &data, guild_id, &member, &uuid, &config, &rules, &hd, false).await,
                     None => sync_unlinked_member(&ctx, &data, guild_id, &member, &config, &rules).await,
                 },
@@ -564,7 +584,7 @@ pub async fn startup_sync(ctx: Context, data: Data) {
         if config.nickname_template.is_none() && rules.is_empty() { continue }
 
         tracing::info!("Startup sync starting for guild {guild_id}");
-        if let Err(e) = try_sync_guild(&ctx, &data, guild_id, &cancel_token()).await {
+        if let Err(e) = try_sync_guild(&ctx, &data, guild_id, &cancel_token(), false).await {
             tracing::warn!("Startup sync failed for guild {guild_id}: {e}");
         }
     }

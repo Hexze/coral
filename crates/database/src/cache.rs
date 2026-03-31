@@ -143,6 +143,17 @@ impl<'a> CacheRepository<'a> {
         .map(|r| r.map(|r| r.0))
     }
 
+    pub async fn get_latest_non_migration_timestamp(&self, uuid: &str) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+        sqlx::query_as::<_, (DateTime<Utc>,)>(
+            "SELECT timestamp FROM player_snapshots WHERE uuid = $1 AND source != 'migration'
+             ORDER BY timestamp DESC LIMIT 1",
+        )
+        .bind(uuid)
+        .fetch_optional(self.pool)
+        .await
+        .map(|r| r.map(|r| r.0))
+    }
+
     pub async fn resolve_uuid(&self, username: &str) -> Result<Option<String>, sqlx::Error> {
         sqlx::query_as::<_, (String,)>(
             "SELECT uuid FROM player_snapshots WHERE LOWER(username) = $1

@@ -1025,7 +1025,7 @@ fn spawn_guild_sync(ctx: &Context, token: &str, data: &Data, guild_id: u64) {
     let data_clone = data.clone();
     spawn_bulk_update(ctx, token, data, guild_id, "Changing Display Names", move |cancel| {
         Box::pin(async move {
-            crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await;
+            crate::sync::sync_guild_fresh(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await;
         })
     });
 }
@@ -1052,7 +1052,7 @@ fn spawn_role_swap(
     spawn_bulk_update(ctx, token, data, guild_id, &heading, move |cancel| {
         Box::pin(async move {
             crate::sync::swap_role(ctx_clone.clone(), data_clone.clone(), GuildId::new(guild_id), old_role, new_role, config_field, cancel.clone()).await;
-            crate::sync::sync_guild(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await;
+            crate::sync::sync_guild_fresh(ctx_clone, data_clone, GuildId::new(guild_id), cancel).await;
         })
     });
 }
