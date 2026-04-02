@@ -88,7 +88,7 @@ pub async fn handle_approve(
             let player = &state.players[player_index];
             let vote_msg = build_vote_message(
                 discord_id, "accept", &player.tag_type, &player.username,
-                player.accept_votes.len(), player.reject_votes.len(),
+                false, player.accept_votes.len(), player.reject_votes.len(),
             );
             component.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await?;
             update_builder(ctx, component.channel_id, &message, &state).await?;
@@ -103,6 +103,10 @@ pub async fn handle_approve(
     let player_username = player.username.clone();
     let player_reason = player.reason.clone();
     let media_urls = extract_media_urls_from_message(&message, player_index);
+
+    if !super::REVIEW_TAGS.contains(&player_tag_type.as_str()) {
+        return send_vote_error(ctx, component, "Invalid tag type in submission").await;
+    }
 
     let repo = BlacklistRepository::new(data.db.pool());
     let reviewed_by: Vec<i64> = if is_staff {
@@ -172,11 +176,10 @@ pub async fn handle_approve(
     update_builder(ctx, component.channel_id, &message, &state).await?;
 
     let channel_id = component.channel_id;
-    let msg = if is_staff {
-        build_vote_message(discord_id, "accept", &player_tag_type, &player_username, 1, 0)
-    } else {
-        build_vote_message(discord_id, "accept", &player_tag_type, &player_username, 3, 0)
-    };
+    let msg = build_vote_message(
+        discord_id, "accept", &player_tag_type, &player_username,
+        is_staff, if is_staff { 1 } else { 3 }, 0,
+    );
     let _ = ctx.http.send_message(channel_id.into(), Vec::<CreateAttachment>::new(), &msg).await;
 
     check_all_resolved(ctx, data, component.channel_id.expect_thread(), &state).await
@@ -237,7 +240,7 @@ pub async fn handle_reject(
         let player = &state.players[player_index];
         let vote_msg = build_vote_message(
             discord_id, "reject", &player.tag_type, &player.username,
-            player.accept_votes.len(), player.reject_votes.len(),
+            false, player.accept_votes.len(), player.reject_votes.len(),
         );
         component.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await?;
         update_builder(ctx, component.channel_id, &message, &state).await?;
@@ -256,7 +259,7 @@ pub async fn handle_reject(
         let _ = member_repo.increment_accurate_verdicts(&accurate_ids).await;
     }
 
-    let vote_msg = build_vote_message(discord_id, "reject", &player_tag_type, &player_username, 0, 3);
+    let vote_msg = build_vote_message(discord_id, "reject", &player_tag_type, &player_username, false, 0, 3);
 
     state.players[player_index].status = PlayerStatus::Rejected;
     state.players[player_index].reviewer = None;
@@ -316,7 +319,7 @@ pub async fn handle_reject_modal(
 
     update_builder(ctx, channel_id, &builder_msg, &state).await?;
 
-    let vote_msg = build_vote_message(discord_id, "reject", &player_tag_type, &player_username, 0, 1);
+    let vote_msg = build_vote_message(discord_id, "reject", &player_tag_type, &player_username, true, 0, 1);
     let _ = ctx.http.send_message(channel_id.into(), Vec::<CreateAttachment>::new(), &vote_msg).await;
 
     modal.edit_response(&ctx.http, EditInteractionResponse::new().content("Rejected")).await?;
@@ -368,7 +371,13 @@ async fn check_all_resolved(
     }
 
     let _ = super::send_thread_message(ctx, channel_id, &summary).await;
-    let _ = thread_id.edit(&ctx.http, EditThread::new().archived(true).locked(true)).await;
+
+    let http = ctx.http.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        let _ = thread_id.edit(&http, EditThread::new().archived(true).locked(true)).await;
+    });
+
     Ok(())
 }
 

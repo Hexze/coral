@@ -96,8 +96,8 @@ pub fn parse_state_from_message(message: &Message) -> Option<SubmissionState> {
                 });
                 if let Some(header) = header_text {
                     if is_player_entry(&header) {
-                        if let Some(player) = parse_player_header(&header) {
-                            players.push(player);
+                        if let Some(username) = parse_player_ign(&header) {
+                            players.push(new_player_entry(username, ""));
                         }
                     }
                 }
@@ -107,8 +107,19 @@ pub fn parse_state_from_message(message: &Message) -> Option<SubmissionState> {
                 let trimmed = content.trim();
 
                 if is_player_entry(trimmed) {
-                    if let Some(player) = parse_player_header(trimmed) {
-                        players.push(player);
+                    if let Some(username) = parse_player_ign(trimmed) {
+                        players.push(new_player_entry(username, ""));
+                    }
+                    continue;
+                }
+
+                if is_tag_type_line(trimmed) {
+                    if let Some(tag_name) = parse_tag_type_line(trimmed) {
+                        if let Some(player) = players.last_mut() {
+                            if player.tag_type.is_empty() {
+                                player.tag_type = tag_name.to_string();
+                            }
+                        }
                     }
                     continue;
                 }
@@ -116,6 +127,16 @@ pub fn parse_state_from_message(message: &Message) -> Option<SubmissionState> {
                 if let Some(player) = players.last_mut() {
                     if trimmed.starts_with('>') {
                         parse_player_details(player, trimmed);
+                    } else if let Some(rest) = trimmed.strip_prefix("-# Currently ") {
+                        let inner = rest.strip_prefix("**").and_then(|s| s.strip_suffix("**")).unwrap_or(rest);
+                        let display = inner.split('>').next_back().unwrap_or(inner).trim();
+                        if let Some(name) = lookup_tag_name_from_display(display) {
+                            player.tag_type = name.to_string();
+                        }
+                    } else if let Some(uuid_str) = trimmed.strip_prefix("-# UUID: ") {
+                        player.uuid = uuid_str.split_whitespace().next().unwrap_or("").replace('-', "");
+                    } else if trimmed.contains("Nicked") && trimmed.starts_with("-#") {
+                        player.is_nicked = true;
                     } else if let Some(status) = parse_status_line(trimmed) {
                         player.status = status.0;
                         player.reviewer = status.1;
@@ -148,6 +169,8 @@ pub fn parse_state_from_message(message: &Message) -> Option<SubmissionState> {
         t.contains("Approved by") || t.contains("Rejected by") || t.contains("awaiting review")
     });
 
+    let players: Vec<_> = players.into_iter().filter(|p| !p.tag_type.is_empty()).collect();
+
     Some(SubmissionState {
         submitter_id,
         players,
@@ -159,30 +182,32 @@ pub fn parse_state_from_message(message: &Message) -> Option<SubmissionState> {
 
 
 pub fn is_player_entry(text: &str) -> bool {
-    let first_line = text.lines().next().unwrap_or("");
-    first_line.contains(" \u{2014} `") && first_line.contains('`')
+    text.starts_with("IGN - `")
 }
 
 
-pub fn find_dash_separator(s: &str) -> Option<usize> {
-    s.find(" \u{2014} ")
+fn is_tag_type_line(text: &str) -> bool {
+    text.starts_with("**") && text.ends_with("**") && text.contains('>')
 }
 
 
-fn parse_player_header(header: &str) -> Option<PlayerEntry> {
-    let username = header.split('`').nth(1)?.to_string();
-    let dash_pos = find_dash_separator(header)?;
-    let tag_part = &header[..dash_pos];
-    let display_name = if tag_part.contains('>') {
-        tag_part.split('>').next_back()?.trim()
-    } else {
-        tag_part.trim()
-    };
+fn parse_player_ign(text: &str) -> Option<String> {
+    text.strip_prefix("IGN - `")?.strip_suffix('`').map(|s| s.to_string())
+}
 
-    Some(PlayerEntry {
+
+fn parse_tag_type_line(text: &str) -> Option<&'static str> {
+    let inner = text.strip_prefix("**")?.strip_suffix("**")?;
+    let display = inner.split('>').next_back()?.trim();
+    lookup_tag_name_from_display(display)
+}
+
+
+fn new_player_entry(username: String, tag_type: &str) -> PlayerEntry {
+    PlayerEntry {
         username,
         uuid: String::new(),
-        tag_type: lookup_tag_name_from_display(display_name)?.to_string(),
+        tag_type: tag_type.to_string(),
         reason: String::new(),
         is_nicked: false,
         status: PlayerStatus::Pending,
@@ -192,30 +217,13 @@ fn parse_player_header(header: &str) -> Option<PlayerEntry> {
         conflict_warning: None,
         accept_votes: Vec::new(),
         reject_votes: Vec::new(),
-    })
+    }
 }
 
 
 fn parse_player_details(player: &mut PlayerEntry, content: &str) {
-    let lines: Vec<&str> = content.lines().collect();
-
-    if let Some(reason) = lines.first().and_then(|l| l.strip_prefix("> ")) {
+    if let Some(reason) = content.lines().next().and_then(|l| l.strip_prefix("> ")) {
         player.reason = reason.to_string();
-    }
-
-    if let Some(meta_line) = lines.get(1) {
-        let meta = meta_line.strip_prefix("> -# ").unwrap_or(meta_line);
-        if meta.contains("Nicked") {
-            player.is_nicked = true;
-        } else if let Some(uuid_str) = meta.strip_prefix("UUID: ") {
-            player.uuid = uuid_str.split_whitespace().next().unwrap_or("").replace('-', "");
-        }
-    }
-
-    for line in lines.iter().skip(2) {
-        if let Some(evidence) = parse_evidence_line(line.trim()) {
-            player.evidence.push(evidence);
-        }
     }
 }
 
@@ -288,19 +296,20 @@ pub fn render_replay_line(replay: &Replay, note: Option<&str>) -> String {
 }
 
 
-pub fn render_player_details(player: &PlayerEntry) -> String {
+pub fn render_player_details(player: &PlayerEntry) -> (String, String) {
+    let mut reason_block = format!("> {}", crate::utils::sanitize_reason(&player.reason));
+    if let Some(warning) = &player.conflict_warning {
+        reason_block.push('\n');
+        reason_block.push_str(warning);
+    }
+
     let uuid_line = if player.is_nicked {
-        "Nicked \u{2014} UUID could not be resolved".to_string()
+        "-# Nicked \u{2014} UUID could not be resolved".to_string()
     } else {
-        format!("UUID: {}", format_uuid_dashed(&player.uuid))
+        format!("-# UUID: {}", format_uuid_dashed(&player.uuid))
     };
 
-    let mut block = format!("> {}\n> -# {}", crate::utils::sanitize_reason(&player.reason), uuid_line);
-    if let Some(warning) = &player.conflict_warning {
-        block.push('\n');
-        block.push_str(warning);
-    }
-    block
+    (reason_block, uuid_line)
 }
 
 

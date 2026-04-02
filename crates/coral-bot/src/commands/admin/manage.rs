@@ -24,7 +24,8 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
     let invoker_id = command.user.id.get();
     let repo = MemberRepository::new(data.db.pool());
     let invoker = repo.get_by_discord_id(invoker_id as i64).await?;
-    let invoker_rank = AccessRank::of(data, invoker_id, invoker.as_ref());
+    let mut invoker_rank = AccessRank::of(data, invoker_id, invoker.as_ref());
+    if data.is_owner(invoker_id) { invoker_rank = AccessRank::Owner; }
     if invoker_rank < AccessRank::Moderator {
         return interact::send_error(ctx, command, "Error", "You don't have permission to use this command").await;
     }
@@ -95,11 +96,16 @@ pub(crate) async fn build_main_view(
 
         let options = access_level_options(invoker_rank, target_rank);
         let disabled = !can_modify || options.is_empty();
+        let menu_options = if options.is_empty() {
+            vec![CreateSelectMenuOption::new(target_rank.label(), "noop")]
+        } else {
+            options
+        };
         parts.push(CreateContainerComponent::ActionRow(
             CreateActionRow::SelectMenu(
                 CreateSelectMenu::new(
                     format!("manage_access_select:{target_id}"),
-                    CreateSelectMenuKind::String { options: options.into() },
+                    CreateSelectMenuKind::String { options: menu_options.into() },
                 )
                 .placeholder(target_rank.label())
                 .disabled(disabled),
@@ -138,8 +144,10 @@ pub(crate) async fn build_main_view(
         parts.push(CreateContainerComponent::ActionRow(CreateActionRow::buttons(key_buttons)));
         parts.push(separator());
 
-        let dev_key = DeveloperKeyRepository::new(data.db.pool())
-            .get_by_member_id(m.id).await.ok().flatten();
+        let dev_key = if invoker_rank >= AccessRank::Admin {
+            DeveloperKeyRepository::new(data.db.pool())
+                .get_by_member_id(m.id).await.ok().flatten()
+        } else { None };
 
         match dev_key {
             Some(dk) => {
@@ -260,7 +268,8 @@ fn access_level_options(invoker_rank: AccessRank, current: AccessRank) -> Vec<Cr
 pub async fn fetch_context(data: &Data, invoker_id: u64, target_id: u64) -> Result<(AccessRank, Option<database::Member>, AccessRank)> {
     let repo = MemberRepository::new(data.db.pool());
     let invoker = repo.get_by_discord_id(invoker_id as i64).await?;
-    let invoker_rank = AccessRank::of(data, invoker_id, invoker.as_ref());
+    let mut invoker_rank = AccessRank::of(data, invoker_id, invoker.as_ref());
+    if data.is_owner(invoker_id) { invoker_rank = AccessRank::Owner; }
     let target = repo.get_by_discord_id(target_id as i64).await?;
     let target_rank = AccessRank::of(data, target_id, target.as_ref());
     Ok((invoker_rank, target, target_rank))

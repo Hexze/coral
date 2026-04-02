@@ -46,4 +46,25 @@ impl RateLimiter {
             false => Ok(RateLimitResult::Allowed { remaining: limit - count }),
         }
     }
+
+    pub async fn check_tag_limit(
+        &self,
+        discord_id: i64,
+        access_level: i16,
+    ) -> Result<RateLimitResult, redis::RedisError> {
+        let limit = tag_limit_for_access(access_level);
+        if limit == 0 { return Ok(RateLimitResult::Allowed { remaining: i64::MAX }); }
+        self.check_and_record(&format!("tag:{discord_id}"), limit).await
+    }
+}
+
+
+fn tag_limit_for_access(access_level: i16) -> i64 {
+    match access_level {
+        5.. => 0,
+        3..=4 => 60,
+        2 => 30,
+        1 => 15,
+        _ => 10,
+    }
 }

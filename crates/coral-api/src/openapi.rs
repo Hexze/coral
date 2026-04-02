@@ -10,7 +10,7 @@ use crate::{
         guild::{GuildQuery, GuildResponse},
         resolve::ResolveResponse,
         session::*,
-        tags::{AddTagRequest, LockRequest, OverwriteTagRequest, TagIdResponse},
+        tags::{AddTagBody, RemoveTagBody, UpdateTagBody, LockRequest, UuidQuery},
         verify::{RedeemCodeResponse, StoreCodeRequest},
         winstreaks::*,
     },
@@ -38,7 +38,7 @@ use crate::{
 
         crate::routes::tags::add_tag,
         crate::routes::tags::remove_tag,
-        crate::routes::tags::overwrite_tag,
+        crate::routes::tags::update_tag,
         crate::routes::tags::lock_player,
         crate::routes::tags::unlock_player,
 
@@ -61,7 +61,7 @@ use crate::{
             CreateMarkerRequest, RenameMarkerRequest,
             SnapshotListResponse, SnapshotDataResponse,
             WinstreakResponse, StreakEntry,
-            AddTagRequest, LockRequest, OverwriteTagRequest, TagIdResponse,
+            AddTagBody, RemoveTagBody, UpdateTagBody, LockRequest, UuidQuery,
             PlayerStatsResponse,
             GuildQuery, GuildResponse,
             ResolveResponse,

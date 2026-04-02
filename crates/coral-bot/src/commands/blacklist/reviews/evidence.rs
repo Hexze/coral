@@ -144,6 +144,8 @@ pub async fn handle_media_modal(
         return Ok(());
     }
 
+    modal.edit_response(&ctx.http, EditInteractionResponse::new().content("Downloading files...")).await?;
+
     let channel_id = modal.channel_id;
     let Some(builder_msg) = find_builder_message(ctx, channel_id).await else {
         modal.edit_response(&ctx.http, EditInteractionResponse::new().content("Could not find the submission message")).await?;
@@ -171,8 +173,16 @@ pub async fn handle_media_modal(
             continue;
         }
         let filename = format!("{}_{}.{}", player.username, existing_count + i + 1, ext);
-        files.push(CreateAttachment::url(&ctx.http, attachment.url.as_str(), filename.clone()).await?);
-        player.evidence.push(Evidence::Attachment { filename });
+        match CreateAttachment::url(&ctx.http, attachment.url.as_str(), filename.clone()).await {
+            Ok(file) => {
+                files.push(file);
+                player.evidence.push(Evidence::Attachment { filename });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to download attachment: {e}");
+                rejected += 1;
+            }
+        }
     }
 
     if files.is_empty() && rejected > 0 {
@@ -180,8 +190,19 @@ pub async fn handle_media_modal(
         return Ok(());
     }
 
-    update_builder_with_files(ctx, channel_id, &builder_msg, &state, files).await?;
-    let _ = modal.delete_response(&ctx.http).await;
+    modal.edit_response(&ctx.http, EditInteractionResponse::new().content("Uploading evidence...")).await?;
+
+    match update_builder_with_files(ctx, channel_id, &builder_msg, &state, files).await {
+        Ok(()) => { let _ = modal.delete_response(&ctx.http).await; }
+        Err(e) => {
+            let msg = if e.to_string().contains("too large") || e.to_string().contains("413") {
+                "File too large. Try compressing or using a smaller file."
+            } else {
+                "Failed to upload evidence. Please try again."
+            };
+            modal.edit_response(&ctx.http, EditInteractionResponse::new().content(msg)).await?;
+        }
+    }
     Ok(())
 }
 

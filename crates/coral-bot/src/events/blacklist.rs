@@ -43,21 +43,23 @@ async fn handle_event(ctx: &Context, data: &Data, event: BlacklistEvent) -> anyh
     match event {
         BlacklistEvent::TagAdded { uuid, tag_id, .. } => {
             let tag = fetch_tag(&repo, tag_id, "TagAdded").await?;
+            let all_tags = repo.get_tags(&uuid).await.unwrap_or_default();
             let name = resolve_name(&cache, &uuid).await;
-            channel::post_new_tag(ctx, data, &uuid, &name, &tag).await;
+            channel::post_new_tag(ctx, data, &uuid, &name, &tag, &all_tags).await;
         }
 
         BlacklistEvent::TagOverwritten {
             uuid, old_tag_id, old_tag_type, old_reason, new_tag_id, overwritten_by,
         } => {
             let new_tag = fetch_tag(&repo, new_tag_id, "TagOverwritten").await?;
+            let all_tags = repo.get_tags(&uuid).await.unwrap_or_default();
             let name = resolve_name(&cache, &uuid).await;
             let old_tag = mock_old_tag(old_tag_id, &new_tag, old_tag_type, old_reason);
             channel::post_tag_changed(
                 ctx, data, &uuid, &name, &old_tag, &new_tag, "Tag Overwritten", overwritten_by as u64,
             )
             .await;
-            channel::post_overwritten_tag(ctx, data, &uuid, &name, &new_tag).await;
+            channel::post_overwritten_tag(ctx, data, &uuid, &name, &new_tag, &all_tags).await;
         }
 
         BlacklistEvent::TagRemoved { uuid, tag_id, removed_by } => {
@@ -116,6 +118,7 @@ fn mock_old_tag(id: i64, new_tag: &PlayerTagRow, tag_type: String, reason: Strin
         reviewed_by: new_tag.reviewed_by.clone(),
         removed_by: new_tag.removed_by,
         removed_on: new_tag.removed_on,
+        expires_at: new_tag.expires_at,
     }
 }
 

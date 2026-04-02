@@ -4,7 +4,7 @@ use blacklist::{EMOTE_ADDTAG, EMOTE_EDITTAG, EMOTE_REMOVETAG, EMOTE_TAG, lookup 
 use database::{BlacklistRepository, PlayerTagRow};
 
 use crate::framework::{AccessRank, Data};
-use crate::utils::{format_uuid_dashed, sanitize_reason};
+use crate::utils::{format_tag_detail, format_uuid_dashed, sanitize_reason};
 
 const FACE_SIZE: u32 = 128;
 const FACE_FILENAME: &str = "face.png";
@@ -21,17 +21,23 @@ fn face_thumbnail() -> CreateThumbnail<'static> {
 }
 
 
-async fn face_attachment(data: &Data, uuid: &str) -> Option<CreateAttachment<'static>> {
-    let png = data.skin_provider.fetch_face(uuid, FACE_SIZE).await?;
-    Some(CreateAttachment::bytes(png, FACE_FILENAME))
+async fn face_attachment(data: &Data, uuid: &str) -> CreateAttachment<'static> {
+    let png = data.skin_provider.fetch_face(uuid, FACE_SIZE).await
+        .unwrap_or_else(|| {
+            let img = image::RgbaImage::from_pixel(FACE_SIZE, FACE_SIZE, image::Rgba([0, 0, 0, 0]));
+            let mut buf = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+            buf.into_inner()
+        });
+    CreateAttachment::bytes(png, FACE_FILENAME)
 }
 
 
-fn section_header(title: String) -> CreateSection<'static> {
-    CreateSection::new(
-        vec![CreateSectionComponent::TextDisplay(CreateTextDisplay::new(title))],
+fn face_section(parts: Vec<String>) -> CreateContainerComponent<'static> {
+    CreateContainerComponent::Section(CreateSection::new(
+        vec![CreateSectionComponent::TextDisplay(CreateTextDisplay::new(parts.join("\n")))],
         CreateSectionAccessory::Thumbnail(face_thumbnail()),
-    )
+    ))
 }
 
 
@@ -60,8 +66,10 @@ pub async fn post_new_tag(
     uuid: &str,
     name: &str,
     tag: &PlayerTagRow,
+    all_tags: &[PlayerTagRow],
 ) -> Option<MessageId> {
-    post_to_blacklist_channel(ctx, data, uuid, name, tag, "New Tag", EMOTE_ADDTAG).await
+    post_tag_to_log(ctx, data, uuid, name, tag, "New Tag", EMOTE_ADDTAG).await;
+    post_to_blacklist_channel(ctx, data, uuid, name, all_tags, "New Tag", EMOTE_ADDTAG).await
 }
 
 
@@ -71,8 +79,10 @@ pub async fn post_overwritten_tag(
     uuid: &str,
     name: &str,
     tag: &PlayerTagRow,
+    all_tags: &[PlayerTagRow],
 ) -> Option<MessageId> {
-    post_to_blacklist_channel(ctx, data, uuid, name, tag, "Tag Overwritten", EMOTE_EDITTAG).await
+    post_tag_to_log(ctx, data, uuid, name, tag, "Tag Overwritten", EMOTE_EDITTAG).await;
+    post_to_blacklist_channel(ctx, data, uuid, name, all_tags, "Tag Overwritten", EMOTE_EDITTAG).await
 }
 
 
@@ -91,22 +101,17 @@ pub async fn post_tag_removed(
     let username = get_username(ctx, removed_by).await;
 
     let face = face_attachment(data, uuid).await;
-    let header = section_header(format!("## {} Tag Removed\nIGN - `{}`", EMOTE_REMOVETAG, name));
-    let tag_display = CreateTextDisplay::new(format!(
-        "{} {}\n> {}\n> -# **\\- Removed by `@{}`**",
-        emote, display_name, sanitize_reason(&tag.reason), username
-    ));
-    let uuid_line = CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"));
-
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(header),
-        CreateContainerComponent::TextDisplay(tag_display),
-        CreateContainerComponent::TextDisplay(uuid_line),
+        face_section(vec![
+            format!("## {} Tag Removed\nIGN - `{}`", EMOTE_REMOVETAG, name),
+            format!("**{} {}**\n> {}\n> -# **\\- Removed by `@{}`**", emote, display_name, format_tag_detail(tag), username),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
     ])
     .accent_color(COLOR_DANGER);
 
-    send_to_mod_channel(ctx, data, container, face.into_iter().collect()).await;
+    send_to_mod_channel(ctx, data, container, vec![face]).await;
 }
 
 
@@ -129,37 +134,29 @@ pub async fn post_tag_changed(
     let new_def = lookup_tag(&new_tag.tag_type);
     let new_emote = new_def.map(|d| d.emote).unwrap_or("");
     let new_display = new_def.map(|d| d.display_name).unwrap_or(&new_tag.tag_type);
-    let new_color = new_def.map(|d| d.color).unwrap_or(0xFFA500);
 
     let old_added_line = format_added_line(ctx, old_tag).await;
     let new_added_line = format_added_line(ctx, new_tag).await;
     let username = get_username(ctx, changed_by).await;
 
     let face = face_attachment(data, uuid).await;
-    let header = section_header(format!("## {} {}\nIGN - `{}`", EMOTE_EDITTAG, title, name));
-
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(header),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "Previous: {} {}\n> {}\n{}",
-            old_emote, old_display, sanitize_reason(&old_tag.reason), old_added_line
-        ))),
+        face_section(vec![
+            format!("## {} {}\nIGN - `{}`", EMOTE_EDITTAG, title, name),
+            format!("Previous: **{} {}**\n> {}\n{}", old_emote, old_display, format_tag_detail(old_tag), old_added_line),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
         CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "New: {} {}\n> {}\n{}",
-            new_emote, new_display, sanitize_reason(&new_tag.reason), new_added_line
+            "New: **{} {}**\n> {}\n{}", new_emote, new_display, format_tag_detail(new_tag), new_added_line
         ))),
         CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "-# {} by `@{}`", title, username
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "-# UUID: {dashed_uuid}"
+            "-# {} by `@{}`\n-# UUID: {dashed_uuid}", title, username
         ))),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
     ])
-    .accent_color(new_color);
+;
 
-    send_to_mod_channel(ctx, data, container, face.into_iter().collect()).await;
+    send_to_mod_channel(ctx, data, container, vec![face]).await;
 }
 
 
@@ -173,32 +170,28 @@ pub async fn post_lock_change(
     changed_by: u64,
 ) {
     let dashed_uuid = format_uuid_dashed(uuid);
-    let (title, color) = if locked {
-        (format!("## {} Player Locked \u{1F512}\nIGN - `{}`", EMOTE_TAG, name), COLOR_DANGER)
+    let title = if locked {
+        format!("## {} Player Locked \u{1F512}\nIGN - `{}`", EMOTE_TAG, name)
     } else {
-        (format!("## {} Player Unlocked \u{1F513}\nIGN - `{}`", EMOTE_TAG, name), COLOR_SUCCESS)
+        format!("## {} Player Unlocked \u{1F513}\nIGN - `{}`", EMOTE_TAG, name)
     };
 
     let face = face_attachment(data, uuid).await;
-    let header = section_header(title);
     let username = get_username(ctx, changed_by).await;
     let action = if locked { "Locked" } else { "Unlocked" };
 
-    let mut parts: Vec<CreateContainerComponent> = vec![CreateContainerComponent::Section(header)];
+    let mut section_parts = vec![title];
     if let Some(r) = reason {
-        parts.push(CreateContainerComponent::TextDisplay(
-            CreateTextDisplay::new(format!("> {}", sanitize_reason(r))),
-        ));
+        section_parts.push(format!("> {}", sanitize_reason(r)));
     }
-    parts.push(CreateContainerComponent::TextDisplay(
-        CreateTextDisplay::new(format!("-# {} by `@{}`", action, username)),
-    ));
-    parts.push(CreateContainerComponent::TextDisplay(
-        CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}")),
-    ));
-    parts.push(CreateContainerComponent::Separator(CreateSeparator::new(true)));
+    section_parts.push(format!("-# {} by `@{}`\n-# UUID: {dashed_uuid}", action, username));
 
-    send_to_mod_channel(ctx, data, CreateContainer::new(parts).accent_color(color), face.into_iter().collect()).await;
+    let parts = vec![
+        face_section(section_parts),
+        CreateContainerComponent::Separator(CreateSeparator::new(true)),
+    ];
+
+    send_to_mod_channel(ctx, data, CreateContainer::new(parts), vec![face]).await;
 }
 
 
@@ -259,7 +252,7 @@ pub async fn post_access_changed(
         ))),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
     ])
-    .accent_color(COLOR_INFO);
+;
 
     send_to_mod_channel(ctx, data, container, vec![]).await;
 }
@@ -272,11 +265,7 @@ pub async fn post_tagging_toggled(
     disabled: bool,
     invoker_id: u64,
 ) {
-    let (title, color) = if disabled {
-        ("Tagging Disabled", COLOR_DANGER)
-    } else {
-        ("Tagging Enabled", COLOR_SUCCESS)
-    };
+    let title = if disabled { "Tagging Disabled" } else { "Tagging Enabled" };
 
     let invoker = get_username(ctx, invoker_id).await;
     let container = CreateContainer::new(vec![
@@ -287,8 +276,8 @@ pub async fn post_tagging_toggled(
             "-# Changed by `@{invoker}`"
         ))),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
-    ])
-    .accent_color(color);
+    ]);
+    let container = if disabled { container.accent_color(COLOR_DANGER) } else { container };
 
     send_to_mod_channel(ctx, data, container, vec![]).await;
 }
@@ -301,10 +290,10 @@ async fn post_key_change(
     invoker_id: u64,
     locked: bool,
 ) {
-    let (title, action, color) = if locked {
-        ("API Key Locked \u{1F512}", "Locked", COLOR_DANGER)
+    let (title, action) = if locked {
+        ("API Key Locked \u{1F512}", "Locked")
     } else {
-        ("API Key Unlocked \u{1F513}", "Unlocked", COLOR_SUCCESS)
+        ("API Key Unlocked \u{1F513}", "Unlocked")
     };
 
     let invoker = get_username(ctx, invoker_id).await;
@@ -316,10 +305,39 @@ async fn post_key_change(
             "-# {action} by `@{invoker}`"
         ))),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
-    ])
-    .accent_color(color);
+    ]);
+    let container = if locked { container.accent_color(COLOR_DANGER) } else { container };
 
     send_to_mod_channel(ctx, data, container, vec![]).await;
+}
+
+
+async fn post_tag_to_log(
+    ctx: &Context,
+    data: &Data,
+    uuid: &str,
+    name: &str,
+    tag: &PlayerTagRow,
+    title: &str,
+    emote: &str,
+) {
+    let def = lookup_tag(&tag.tag_type);
+    let tag_emote = def.map(|d| d.emote).unwrap_or("");
+    let display_name = def.map(|d| d.display_name).unwrap_or(&tag.tag_type);
+    let dashed_uuid = format_uuid_dashed(uuid);
+    let added_line = format_added_line(ctx, tag).await;
+    let face = face_attachment(data, uuid).await;
+
+    let container = CreateContainer::new(vec![
+        face_section(vec![
+            format!("## {} {}\nIGN - `{}`", emote, title, name),
+            format!("**{} {}**\n> {}\n{}", tag_emote, display_name, format_tag_detail(tag), added_line),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
+        CreateContainerComponent::Separator(CreateSeparator::new(true)),
+    ]);
+
+    send_to_mod_channel(ctx, data, container, vec![face]).await;
 }
 
 
@@ -339,70 +357,63 @@ async fn post_to_blacklist_channel(
     data: &Data,
     uuid: &str,
     name: &str,
-    tag: &PlayerTagRow,
+    all_tags: &[PlayerTagRow],
     title: &str,
     emote: &str,
 ) -> Option<MessageId> {
     let channel_id = data.blacklist_channel_id?;
-
-    let def = lookup_tag(&tag.tag_type);
-    let tag_emote = def.map(|d| d.emote).unwrap_or("");
-    let display_name = def.map(|d| d.display_name).unwrap_or(&tag.tag_type);
     let dashed_uuid = format_uuid_dashed(uuid);
 
-    let evidence_thread = if tag.tag_type == "confirmed_cheater" {
-        BlacklistRepository::new(data.db.pool())
-            .get_player(uuid)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|p| p.evidence_thread)
-    } else {
-        None
-    };
-
-    let evidence_indicator = if tag.tag_type == "confirmed_cheater" {
-        if evidence_thread.is_some() {
-            " <:evidencefound:1482666860225888346>"
-        } else {
-            " <:noevidence:1482666258938990696>"
-        }
-    } else {
-        ""
-    };
+    let evidence_thread = BlacklistRepository::new(data.db.pool())
+        .get_player(uuid).await.ok().flatten()
+        .and_then(|p| p.evidence_thread);
 
     let face = face_attachment(data, uuid).await;
-    let header = section_header(format!("## {} {}\nIGN - `{}`", emote, title, name));
-    let added_line = format_added_line(ctx, tag).await;
 
-    let mut tag_text = format!(
-        "{} {}{}\n> {}\n{}",
-        tag_emote, display_name, evidence_indicator, sanitize_reason(&tag.reason), added_line
-    );
+    let mut section_parts = vec![format!("## {} {}\nIGN - `{}`", emote, title, name)];
 
-    if let Some(reviewers) = &tag.reviewed_by {
-        if !reviewers.is_empty() {
-            let mut names = Vec::new();
-            for &id in reviewers {
-                names.push(format!("`@{}`", get_username(ctx, id as u64).await));
+    for tag in all_tags {
+        let def = lookup_tag(&tag.tag_type);
+        let tag_emote = def.map(|d| d.emote).unwrap_or("");
+        let display_name = def.map(|d| d.display_name).unwrap_or(&tag.tag_type);
+
+        let evidence_indicator = if tag.tag_type == "confirmed_cheater" {
+            if evidence_thread.is_some() { " <:evidencefound:1482666860225888346>" }
+            else { " <:noevidence:1482666258938990696>" }
+        } else { "" };
+
+        let added_line = format_added_line(ctx, tag).await;
+        let mut tag_text = format!(
+            "**{} {}**{}\n> {}\n{}",
+            tag_emote, display_name, evidence_indicator, format_tag_detail(tag), added_line
+        );
+
+        if let Some(reviewers) = &tag.reviewed_by {
+            if !reviewers.is_empty() {
+                let names: Vec<String> = futures::future::join_all(
+                    reviewers.iter().map(|&id| async move {
+                        format!("`@{}`", get_username(ctx, id as u64).await)
+                    })
+                ).await;
+                tag_text.push_str(&format!("\n> -# **\\- Reviewed by {}**", names.join(", ")));
             }
-            tag_text.push_str(&format!("\n> -# **\\- Reviewed by {}**", names.join(", ")));
         }
+
+        section_parts.push(tag_text);
     }
 
     let mut footer = format!("-# UUID: {dashed_uuid}");
     if let Some(ref url) = evidence_thread {
         footer.push_str(&format!(" | [Evidence]({url})"));
     }
+    section_parts.push(footer);
 
-    let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(header),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(tag_text)),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(footer)),
+    let parts = vec![
+        face_section(section_parts),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
-    ]);
+    ];
 
-    send_container(ctx, channel_id, container, face.into_iter().collect()).await
+    send_container(ctx, channel_id, CreateContainer::new(parts), vec![face]).await
 }
 
 

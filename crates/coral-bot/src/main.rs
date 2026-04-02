@@ -63,16 +63,26 @@ async fn init_data() -> Result<Data> {
     let skin_provider: Arc<dyn SkinProvider> =
         Arc::new(LocalSkinProvider::new().expect("Failed to initialize skin renderer"));
 
+    let review_forum_id = parse_channel_id("REVIEW_FORUM_ID");
+    let evidence_forum_id = parse_channel_id("EVIDENCE_FORUM_ID");
+    let blacklist_channel_id = parse_channel_id("BLACKLIST_CHANNEL_ID");
+    let mod_channel_id = parse_channel_id("MOD_CHANNEL_ID");
+
+    tracing::info!(
+        "Channels: blacklist={:?} mod={:?} review={:?} evidence={:?}",
+        blacklist_channel_id, mod_channel_id, review_forum_id, evidence_forum_id,
+    );
+
     Ok(Data {
         db: Arc::new(db),
         api: Arc::new(api),
         skin_provider,
         owner_ids: parse_owner_ids(),
         home_guild_id: parse_guild_id("HOME_GUILD_ID"),
-        blacklist_channel_id: parse_channel_id("BLACKLIST_CHANNEL_ID"),
-        mod_channel_id: parse_channel_id("MOD_CHANNEL_ID"),
-        review_forum_id: parse_channel_id("REVIEW_FORUM_ID"),
-        evidence_forum_id: parse_channel_id("EVIDENCE_FORUM_ID"),
+        blacklist_channel_id,
+        mod_channel_id,
+        review_forum_id,
+        evidence_forum_id,
         redis,
         redis_url,
         event_publisher,
@@ -97,12 +107,16 @@ fn parse_owner_ids() -> Vec<u64> {
 
 
 fn parse_channel_id(name: &str) -> Option<ChannelId> {
-    env::var(name).ok().and_then(|s| s.parse::<u64>().ok()).map(ChannelId::new)
+    let raw = env::var(name).ok()?;
+    let id = raw.trim().parse::<u64>().ok()?;
+    Some(ChannelId::new(id))
 }
 
 
 fn parse_guild_id(name: &str) -> Option<GuildId> {
-    env::var(name).ok().and_then(|s| s.parse::<u64>().ok()).map(GuildId::new)
+    let raw = env::var(name).ok()?;
+    let id = raw.trim().parse::<u64>().ok()?;
+    Some(GuildId::new(id))
 }
 
 

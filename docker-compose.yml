@@ -99,6 +99,8 @@ services:
       OWNER_IDS: ${OWNER_IDS:-}
       BLACKLIST_CHANNEL_ID: ${BLACKLIST_CHANNEL_ID:-}
       MOD_CHANNEL_ID: ${MOD_CHANNEL_ID:-}
+      REVIEW_FORUM_ID: ${REVIEW_FORUM_ID:-}
+      EVIDENCE_FORUM_ID: ${EVIDENCE_FORUM_ID:-}
       RUST_LOG: ${RUST_LOG:-info}
     networks:
       - coral-network

@@ -109,7 +109,7 @@ async fn authenticate_key(state: &AppState, api_key: &str) -> Result<AuthResult,
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         if member.key_locked { return Err(StatusCode::FORBIDDEN); }
-        check_rate_limit(state, api_key, rate_limit_for_access(member.access_level)).await?;
+        check_rate_limit(state, api_key, PERSONAL_RATE_LIMIT).await?;
         return Ok(AuthResult::Personal(member));
     }
 
@@ -137,7 +137,7 @@ async fn authenticate_personal_key(state: &AppState, api_key: &str) -> Result<Me
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     if member.key_locked { return Err(StatusCode::FORBIDDEN); }
-    check_rate_limit(state, api_key, rate_limit_for_access(member.access_level)).await?;
+    check_rate_limit(state, api_key, PERSONAL_RATE_LIMIT).await?;
     Ok(member)
 }
 
@@ -151,13 +151,7 @@ async fn check_rate_limit(state: &AppState, api_key: &str, limit: i64) -> Result
 }
 
 
-pub fn rate_limit_for_access(access_level: i16) -> i64 {
-    match access_level {
-        4.. => 3000,
-        2..=3 => 1200,
-        _ => 600,
-    }
-}
+pub const PERSONAL_RATE_LIMIT: i64 = 600;
 
 
 fn is_internal_key(state: &AppState, api_key: &str) -> bool {

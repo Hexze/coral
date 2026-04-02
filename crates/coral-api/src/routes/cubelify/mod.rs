@@ -77,7 +77,7 @@ async fn check_rate_limit(
     api_key: &str,
     member: &Member,
 ) -> Result<(), CubelifyResponse> {
-    match state.rate_limiter.check_and_record(api_key, crate::auth::rate_limit_for_access(member.access_level)).await {
+    match state.rate_limiter.check_and_record(api_key, crate::auth::PERSONAL_RATE_LIMIT).await {
         Ok(RateLimitResult::Allowed { .. }) => Ok(()),
         Ok(RateLimitResult::Exceeded) => Err(CubelifyResponse::error("Rate limit exceeded", "mdi-speedometer")),
         Err(_) => Err(CubelifyResponse::error("Internal Error", "mdi-alert-circle")),
@@ -131,6 +131,10 @@ async fn build_tooltip(state: &AppState, tag_name: &str, tag: &PlayerTagRow) -> 
     if !tag.reason.is_empty() {
         tooltip.push_str(&format!("\n- {}", tag.reason));
     }
+    if let Some(expires_at) = tag.expires_at {
+        let remaining = relative_time_future(expires_at);
+        tooltip.push_str(&format!("\n- Expires {remaining}"));
+    }
     tooltip
 }
 
@@ -148,6 +152,19 @@ fn relative_time(timestamp: chrono::DateTime<Utc>) -> String {
         _ => (secs / 31_536_000, "yr"),
     };
     format!("{val}{unit} ago")
+}
+
+
+fn relative_time_future(timestamp: chrono::DateTime<Utc>) -> String {
+    let secs = (timestamp - Utc::now()).num_seconds();
+    if secs <= 0 { return "soon".into(); }
+    let (val, unit) = match secs {
+        0..3600 => (secs / 60, "min"),
+        3600..86400 => (secs / 3600, "hr"),
+        86400..2_592_000 => (secs / 86400, "d"),
+        _ => (secs / 2_592_000, "mon"),
+    };
+    format!("in {val}{unit}")
 }
 
 

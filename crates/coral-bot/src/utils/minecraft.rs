@@ -33,6 +33,17 @@ pub fn sanitize_reason(reason: &str) -> String {
 }
 
 
+pub fn format_tag_detail(tag: &database::PlayerTagRow) -> String {
+    if tag.tag_type == "replays_needed" {
+        return match tag.expires_at {
+            Some(ts) => format!("Expires <t:{}:R>", ts.timestamp()),
+            None => "No expiration".into(),
+        };
+    }
+    sanitize_reason(&tag.reason)
+}
+
+
 pub fn generate_api_key() -> String {
     uuid::Uuid::new_v4().to_string()
 }

@@ -27,8 +27,7 @@ pub trait AccessRankExt {
 
 
 impl AccessRankExt for AccessRank {
-    fn of(data: &Data, user_id: u64, member: Option<&Member>) -> AccessRank {
-        if data.is_owner(user_id) { return AccessRank::Owner }
+    fn of(_data: &Data, _user_id: u64, member: Option<&Member>) -> AccessRank {
         AccessRank::from_level(member.map(|m| m.access_level).unwrap_or(0))
     }
 }
@@ -93,12 +92,11 @@ impl Handler {
             commands::user::unlink::register(),
             commands::user::dashboard::register(),
             commands::user::help::register(),
-            commands::admin::info::register(),
             commands::admin::stats::register(),
-            commands::admin::ban::register(),
             commands::admin::manage::register(),
             commands::admin::strike::register(),
             commands::blacklist::evidence::register(),
+            commands::blacklist::watch::register(),
         ]
         .into_iter()
         .map(|cmd| {
@@ -133,13 +131,12 @@ impl Handler {
             "unlink" => commands::user::unlink::run(ctx, command, &self.data).await,
             "dashboard" => commands::user::dashboard::run(ctx, command, &self.data).await,
             "help" => commands::user::help::run(ctx, command, &self.data).await,
-            "info" => commands::admin::info::run(ctx, command, &self.data).await,
             "stats" => commands::admin::stats::run(ctx, command, &self.data).await,
-            "ban" => commands::admin::ban::run(ctx, command, &self.data).await,
             "manage" => commands::admin::manage::run(ctx, command, &self.data).await,
             "setup" => commands::admin::setup::run(ctx, command, &self.data).await,
             "strike" => commands::admin::strike::run(ctx, command, &self.data).await,
             "confirm" => commands::blacklist::evidence::run(ctx, command, &self.data).await,
+            "watch" => commands::blacklist::watch::run(ctx, command, &self.data).await,
             _ => Ok(()),
         }
     }

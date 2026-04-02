@@ -43,9 +43,16 @@ fn parse_i64(val: &serde_json::Value) -> Option<i64> {
     }
 }
 
+fn normalize_timestamp(s: &str) -> String {
+    if s.contains('+') || s.ends_with('Z') { return s.to_string(); }
+    format!("{s}+00:00")
+}
+
+
 fn map_tag(tag: &MongoTag) -> Option<serde_json::Value> {
     let reason = tag.reason.as_deref().unwrap_or("");
     let added_by = tag.added_by.as_ref().and_then(parse_i64).unwrap_or(0);
+    let added_on = tag.added_on.as_deref().map(normalize_timestamp);
 
     if tag.tag_type == "caution" {
         if reason.to_lowercase().contains("replays needed") {
@@ -53,7 +60,7 @@ fn map_tag(tag: &MongoTag) -> Option<serde_json::Value> {
                 "tag_type": "replays_needed",
                 "reason": "",
                 "added_by": added_by,
-                "added_on": tag.added_on,
+                "added_on": added_on,
                 "hide_username": tag.hide_username.unwrap_or(false),
             }));
         }
@@ -68,7 +75,7 @@ fn map_tag(tag: &MongoTag) -> Option<serde_json::Value> {
         "tag_type": tag.tag_type,
         "reason": reason,
         "added_by": added_by,
-        "added_on": tag.added_on,
+        "added_on": added_on,
         "hide_username": tag.hide_username.unwrap_or(false),
     }))
 }

@@ -9,6 +9,7 @@ mod members;
 mod periods;
 mod pool;
 mod sessions;
+mod tag_ops;
 
 pub use access::AccessRank;
 pub use accounts::{AccountRepository, MinecraftAccount};
@@ -21,3 +22,4 @@ pub use members::{Member, MemberRepository};
 pub use periods::Period;
 pub use pool::Database;
 pub use sessions::{SessionMarker, SessionRepository};
+pub use tag_ops::{TagOp, TagOpError};

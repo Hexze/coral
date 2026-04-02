@@ -7,6 +7,7 @@ use serenity::all::*;
 
 use super::channel::COLOR_DANGER;
 use super::tag::get_rank;
+use super::reviews;
 use crate::framework::{AccessRank, Data};
 use crate::utils::{format_uuid_dashed, separator, text};
 use coral_redis::BlacklistEvent;
@@ -33,51 +34,114 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
 
     let discord_id = command.user.id.get();
     let rank = get_rank(data, discord_id).await?;
-    if rank < AccessRank::Helper {
+    if rank < AccessRank::Member {
         return crate::interact::send_deferred_error(
-            ctx, command, "Error", "Only helpers and above can use this command",
+            ctx, command, "Error", "Only members and above can use this command",
         ).await;
     }
 
-    let Some(forum_id) = data.evidence_forum_id else {
-        return crate::interact::send_deferred_error(
-            ctx, command, "Error", "Evidence forum channel not configured",
-        ).await;
-    };
-
-    let player_name = command
-        .data
-        .options()
-        .iter()
-        .find(|o| o.name == "player")
-        .and_then(|o| match o.value {
-            ResolvedValue::String(s) => Some(s),
+    let player_name = command.data.options().iter()
+        .find_map(|o| match (&*o.name, &o.value) {
+            ("player", ResolvedValue::String(s)) => Some(*s),
             _ => None,
         })
         .unwrap_or("");
 
     let player_info = match data.api.resolve(player_name).await {
         Ok(info) => info,
-        Err(_) => {
-            return crate::interact::send_deferred_error(ctx, command, "Error", "Player not found")
-                .await;
-        }
+        Err(_) => return crate::interact::send_deferred_error(ctx, command, "Error", "Player not found").await,
     };
 
     let repo = BlacklistRepository::new(data.db.pool());
     let tags = repo.get_tags(&player_info.uuid).await?;
 
-    let Some(tag) = tags.iter().find(|t| QUALIFYING_TAGS.contains(&t.tag_type.as_str())) else {
+    if tags.iter().any(|t| t.tag_type == "confirmed_cheater") {
+        return crate::interact::send_deferred_error(
+            ctx, command, "Error", "Player is already confirmed",
+        ).await;
+    }
+
+    let Some(tag) = tags.iter().find(|t| t.tag_type == "closet_cheater" || t.tag_type == "blatant_cheater") else {
         return crate::interact::send_deferred_error(
             ctx, command, "Error",
-            "Player does not have a closet cheater, blatant cheater, or confirmed cheater tag",
+            "Player must have a closet cheater or blatant cheater tag",
         ).await;
     };
 
-    let original_type = tag.tag_type.clone();
+    if let Some(player) = repo.get_player(&player_info.uuid).await? {
+        if let Some(thread_url) = &player.evidence_thread {
+            let emote = lookup_tag("confirmed_cheater").map(|d| d.emote).unwrap_or("");
+            command.edit_response(
+                &ctx.http,
+                EditInteractionResponse::new()
+                    .flags(MessageFlags::IS_COMPONENTS_V2)
+                    .components(vec![CreateComponent::Container(CreateContainer::new(
+                        vec![CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
+                            "## {} Evidence Already Exists\nPlayer: `{}`\nThread: {}",
+                            emote, player_info.username, thread_url
+                        )))],
+                    ))]),
+            ).await?;
+            return Ok(());
+        }
+    }
+
+    if rank < AccessRank::Helper {
+        return run_member_confirm(ctx, command, data, discord_id, &player_info, tag).await;
+    }
+
+    run_staff_confirm(ctx, command, data, &player_info, &tag.tag_type).await
+}
+
+
+async fn run_member_confirm(
+    ctx: &Context,
+    command: &CommandInteraction,
+    data: &Data,
+    discord_id: u64,
+    player_info: &crate::api::ResolveResponse,
+    tag: &database::PlayerTagRow,
+) -> Result<()> {
+    let thread_id = reviews::create_submission(
+        ctx, data, discord_id,
+        &player_info.username, &player_info.uuid,
+        &tag.tag_type, &tag.reason, false,
+    ).await?;
+
+    reviews::spawn_submission_timeout(ctx.clone(), thread_id);
+
+    let emote = lookup_tag("confirmed_cheater").map(|d| d.emote).unwrap_or("");
+    command.edit_response(
+        &ctx.http,
+        EditInteractionResponse::new()
+            .flags(MessageFlags::IS_COMPONENTS_V2)
+            .components(vec![CreateComponent::Container(CreateContainer::new(
+                vec![CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
+                    "## {} Review Submitted\nPlayer: `{}`\nThread: <#{}>\n-# Add evidence to the thread to proceed",
+                    emote, player_info.username, thread_id.get()
+                )))],
+            ))]),
+    ).await?;
+    Ok(())
+}
+
+
+async fn run_staff_confirm(
+    ctx: &Context,
+    command: &CommandInteraction,
+    data: &Data,
+    player_info: &crate::api::ResolveResponse,
+    original_type: &str,
+) -> Result<()> {
+    let Some(forum_id) = data.evidence_forum_id else {
+        return crate::interact::send_deferred_error(
+            ctx, command, "Error", "Evidence forum channel not configured",
+        ).await;
+    };
+
     let thread_title = format!("{} | {}", player_info.username, format_uuid_dashed(&player_info.uuid));
     let message_content = build_evidence_message(
-        &player_info.username, &player_info.uuid, &original_type, &[], None, &HashMap::new(),
+        &player_info.username, &player_info.uuid, original_type, &[], None, &HashMap::new(),
     );
 
     let thread = forum_id
@@ -97,23 +161,21 @@ pub async fn run(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
         command.guild_id.map(|g| g.get()).unwrap_or(0),
         thread.id.get(),
     );
+    let repo = BlacklistRepository::new(data.db.pool());
     repo.set_evidence_thread(&player_info.uuid, &thread_url).await?;
 
     let emote = lookup_tag("confirmed_cheater").map(|d| d.emote).unwrap_or("");
-    command
-        .edit_response(
-            &ctx.http,
-            EditInteractionResponse::new()
-                .flags(MessageFlags::IS_COMPONENTS_V2)
-                .components(vec![CreateComponent::Container(CreateContainer::new(
-                    vec![CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-                        "## {} Evidence Post Created\nPlayer: `{}`\nThread: <#{}>",
-                        emote, player_info.username, thread.id.get()
-                    )))],
-                ))]),
-        )
-        .await?;
-
+    command.edit_response(
+        &ctx.http,
+        EditInteractionResponse::new()
+            .flags(MessageFlags::IS_COMPONENTS_V2)
+            .components(vec![CreateComponent::Container(CreateContainer::new(
+                vec![CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
+                    "## {} Evidence Post Created\nPlayer: `{}`\nThread: <#{}>",
+                    emote, player_info.username, thread.id.get()
+                )))],
+            ))]),
+    ).await?;
     Ok(())
 }
 
@@ -427,6 +489,8 @@ pub async fn handle_media_modal(
         return Ok(());
     }
 
+    modal.edit_response(&ctx.http, EditInteractionResponse::new().content("Downloading files...")).await?;
+
     let channel_id = modal.channel_id;
     let builder_msg_id = MessageId::new(channel_id.get());
     let Ok(builder_msg) = ctx.http.get_message(channel_id.into(), builder_msg_id).await else {
@@ -455,8 +519,16 @@ pub async fn handle_media_modal(
             continue;
         }
         let filename = format!("{}_{}.{}", state.username, existing_count + i + 1, ext);
-        files.push(CreateAttachment::url(&ctx.http, attachment.url.as_str(), filename.clone()).await?);
-        state.evidence.push(EvidenceItem { filename });
+        match CreateAttachment::url(&ctx.http, attachment.url.as_str(), filename.clone()).await {
+            Ok(file) => {
+                files.push(file);
+                state.evidence.push(EvidenceItem { filename });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to download attachment: {e}");
+                rejected += 1;
+            }
+        }
     }
 
     if files.is_empty() && rejected > 0 {
@@ -486,18 +558,30 @@ pub async fn handle_media_modal(
         attachments = attachments.add(f);
     }
 
+    modal.edit_response(&ctx.http, EditInteractionResponse::new().content("Uploading evidence...")).await?;
+
     let edit = EditMessage::new()
         .content("")
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(components)
         .attachments(attachments);
-    ctx.http.edit_message(channel_id.into(), builder_msg.id, &edit, files).await?;
 
-    if existing_count == 0 {
-        try_convert_to_confirmed(data, &state, modal.user.id.get()).await?;
+    match ctx.http.edit_message(channel_id.into(), builder_msg.id, &edit, files).await {
+        Ok(_) => {
+            if existing_count == 0 {
+                try_convert_to_confirmed(data, &state, modal.user.id.get()).await?;
+            }
+            let _ = modal.delete_response(&ctx.http).await;
+        }
+        Err(e) => {
+            let msg = if e.to_string().contains("too large") || e.to_string().contains("413") {
+                "File too large. Try compressing or using a smaller file."
+            } else {
+                "Failed to upload evidence. Please try again."
+            };
+            modal.edit_response(&ctx.http, EditInteractionResponse::new().content(msg)).await?;
+        }
     }
-
-    let _ = modal.delete_response(&ctx.http).await;
     Ok(())
 }
 
@@ -570,6 +654,9 @@ pub async fn handle_remove(
 
 async fn revert_from_confirmed(repo: &BlacklistRepository<'_>, state: &EvidenceState) -> Result<()> {
     if state.original_type.is_empty() || state.original_type == "confirmed_cheater" {
+        return Ok(());
+    }
+    if blacklist::lookup(&state.original_type).is_none() {
         return Ok(());
     }
     let tags = repo.get_tags(&state.uuid).await?;

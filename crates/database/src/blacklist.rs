@@ -26,7 +26,15 @@ pub struct PlayerTagRow {
     pub reviewed_by: Option<Vec<i64>>,
     pub removed_by: Option<i64>,
     pub removed_on: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
+
+
+const COLS: &str = "\
+    pt.id, pt.player_id, pt.tag_type, pt.reason, pt.added_by, pt.added_on, \
+    pt.hide_username, pt.reviewed_by, pt.removed_by, pt.removed_on, pt.expires_at";
+
+const ACTIVE: &str = "pt.removed_on IS NULL AND (pt.expires_at IS NULL OR pt.expires_at > NOW())";
 
 
 pub struct BlacklistRepository<'a> {
@@ -62,16 +70,28 @@ impl<'a> BlacklistRepository<'a> {
     }
 
     pub async fn get_tags(&self, uuid: &str) -> Result<Vec<PlayerTagRow>, sqlx::Error> {
-        sqlx::query_as(
-            "SELECT pt.id, pt.player_id, pt.tag_type, pt.reason, pt.added_by, pt.added_on,
-                    pt.hide_username, pt.reviewed_by, pt.removed_by, pt.removed_on
+        sqlx::query_as(&format!(
+            "SELECT {COLS}
              FROM player_tags pt
              JOIN blacklist_players bp ON bp.id = pt.player_id
-             WHERE bp.uuid = $1 AND pt.removed_on IS NULL
+             WHERE bp.uuid = $1 AND {ACTIVE}
              ORDER BY pt.added_on DESC",
-        )
+        ))
         .bind(uuid)
         .fetch_all(self.pool)
+        .await
+    }
+
+    pub async fn get_tag_by_type(&self, uuid: &str, tag_type: &str) -> Result<Option<PlayerTagRow>, sqlx::Error> {
+        sqlx::query_as(&format!(
+            "SELECT {COLS}
+             FROM player_tags pt
+             JOIN blacklist_players bp ON bp.id = pt.player_id
+             WHERE bp.uuid = $1 AND pt.tag_type = $2 AND {ACTIVE}",
+        ))
+        .bind(uuid)
+        .bind(tag_type)
+        .fetch_optional(self.pool)
         .await
     }
 
@@ -86,8 +106,9 @@ impl<'a> BlacklistRepository<'a> {
     pub async fn get_tag_by_id(&self, tag_id: i64) -> Result<Option<PlayerTagRow>, sqlx::Error> {
         sqlx::query_as(
             "SELECT id, player_id, tag_type, reason, added_by, added_on,
-                    hide_username, reviewed_by, removed_by, removed_on
-             FROM player_tags WHERE id = $1 AND removed_on IS NULL",
+                    hide_username, reviewed_by, removed_by, removed_on, expires_at
+             FROM player_tags WHERE id = $1
+               AND removed_on IS NULL AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(tag_id)
         .fetch_optional(self.pool)
@@ -95,14 +116,13 @@ impl<'a> BlacklistRepository<'a> {
     }
 
     pub async fn get_tag_history(&self, uuid: &str) -> Result<Vec<PlayerTagRow>, sqlx::Error> {
-        sqlx::query_as(
-            "SELECT pt.id, pt.player_id, pt.tag_type, pt.reason, pt.added_by, pt.added_on,
-                    pt.hide_username, pt.reviewed_by, pt.removed_by, pt.removed_on
+        sqlx::query_as(&format!(
+            "SELECT {COLS}
              FROM player_tags pt
              JOIN blacklist_players bp ON bp.id = pt.player_id
              WHERE bp.uuid = $1
              ORDER BY pt.added_on DESC",
-        )
+        ))
         .bind(uuid)
         .fetch_all(self.pool)
         .await
@@ -117,10 +137,23 @@ impl<'a> BlacklistRepository<'a> {
         hide_username: bool,
         reviewed_by: Option<&[i64]>,
     ) -> Result<i64, sqlx::Error> {
+        self.add_tag_with_expiry(uuid, tag_type, reason, added_by, hide_username, reviewed_by, None).await
+    }
+
+    pub async fn add_tag_with_expiry(
+        &self,
+        uuid: &str,
+        tag_type: &str,
+        reason: &str,
+        added_by: i64,
+        hide_username: bool,
+        reviewed_by: Option<&[i64]>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<i64, sqlx::Error> {
         let player = self.get_or_create_player(uuid).await?;
         let (id,): (i64,) = sqlx::query_as(
-            "INSERT INTO player_tags (player_id, tag_type, reason, added_by, hide_username, reviewed_by)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO player_tags (player_id, tag_type, reason, added_by, hide_username, reviewed_by, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING id",
         )
         .bind(player.id)
@@ -129,6 +162,7 @@ impl<'a> BlacklistRepository<'a> {
         .bind(added_by)
         .bind(hide_username)
         .bind(reviewed_by)
+        .bind(expires_at)
         .fetch_one(self.pool)
         .await?;
         Ok(id)
@@ -144,6 +178,52 @@ impl<'a> BlacklistRepository<'a> {
         .execute(self.pool)
         .await
         .map(|r| r.rows_affected() > 0)
+    }
+
+    pub async fn remove_tag_by_type(&self, uuid: &str, tag_type: &str, removed_by: i64) -> Result<bool, sqlx::Error> {
+        sqlx::query(
+            "UPDATE player_tags SET removed_by = $3, removed_on = NOW()
+             FROM blacklist_players bp
+             WHERE player_tags.player_id = bp.id AND bp.uuid = $1
+               AND player_tags.tag_type = $2
+               AND player_tags.removed_on IS NULL
+               AND (player_tags.expires_at IS NULL OR player_tags.expires_at > NOW())",
+        )
+        .bind(uuid)
+        .bind(tag_type)
+        .bind(removed_by)
+        .execute(self.pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+    }
+
+    pub async fn update_tag(
+        &self,
+        uuid: &str,
+        tag_type: &str,
+        new_reason: Option<&str>,
+        new_hide: Option<bool>,
+    ) -> Result<Option<PlayerTagRow>, sqlx::Error> {
+        sqlx::query_as(
+            "UPDATE player_tags SET
+                reason = COALESCE($3, player_tags.reason),
+                hide_username = COALESCE($4, player_tags.hide_username)
+             FROM blacklist_players bp
+             WHERE player_tags.player_id = bp.id AND bp.uuid = $1
+               AND player_tags.tag_type = $2
+               AND player_tags.removed_on IS NULL
+               AND (player_tags.expires_at IS NULL OR player_tags.expires_at > NOW())
+             RETURNING player_tags.id, player_tags.player_id, player_tags.tag_type,
+                       player_tags.reason, player_tags.added_by, player_tags.added_on,
+                       player_tags.hide_username, player_tags.reviewed_by,
+                       player_tags.removed_by, player_tags.removed_on, player_tags.expires_at",
+        )
+        .bind(uuid)
+        .bind(tag_type)
+        .bind(new_reason)
+        .bind(new_hide)
+        .fetch_optional(self.pool)
+        .await
     }
 
     pub async fn modify_tag(
@@ -220,14 +300,13 @@ impl<'a> BlacklistRepository<'a> {
     }
 
     pub async fn get_players_batch(&self, uuids: &[String]) -> Result<Vec<(String, Vec<PlayerTagRow>)>, sqlx::Error> {
-        let tags: Vec<PlayerTagRow> = sqlx::query_as(
-            "SELECT pt.id, pt.player_id, pt.tag_type, pt.reason, pt.added_by, pt.added_on,
-                    pt.hide_username, pt.reviewed_by, pt.removed_by, pt.removed_on
+        let tags: Vec<PlayerTagRow> = sqlx::query_as(&format!(
+            "SELECT {COLS}
              FROM player_tags pt
              JOIN blacklist_players bp ON bp.id = pt.player_id
-             WHERE bp.uuid = ANY($1) AND pt.removed_on IS NULL
+             WHERE bp.uuid = ANY($1) AND {ACTIVE}
              ORDER BY bp.uuid, pt.added_on DESC",
-        )
+        ))
         .bind(uuids)
         .fetch_all(self.pool)
         .await?;
@@ -256,14 +335,17 @@ impl<'a> BlacklistRepository<'a> {
     }
 
     pub async fn count_active_tags(&self) -> Result<i64, sqlx::Error> {
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM player_tags WHERE removed_on IS NULL")
-            .fetch_one(self.pool).await?;
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM player_tags WHERE removed_on IS NULL AND (expires_at IS NULL OR expires_at > NOW())"
+        ).fetch_one(self.pool).await?;
         Ok(count)
     }
 
     pub async fn count_tags_by_type(&self) -> Result<Vec<(String, i64)>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT tag_type, COUNT(*) as count FROM player_tags WHERE removed_on IS NULL GROUP BY tag_type ORDER BY count DESC"
+            "SELECT tag_type, COUNT(*) as count FROM player_tags
+             WHERE removed_on IS NULL AND (expires_at IS NULL OR expires_at > NOW())
+             GROUP BY tag_type ORDER BY count DESC"
         ).fetch_all(self.pool).await
     }
 
@@ -273,6 +355,16 @@ impl<'a> BlacklistRepository<'a> {
             .fetch_one(self.pool)
             .await?;
         Ok(count)
+    }
+
+    pub async fn cleanup_expired_tags(&self) -> Result<u64, sqlx::Error> {
+        sqlx::query(
+            "UPDATE player_tags SET removed_on = NOW()
+             WHERE expires_at IS NOT NULL AND expires_at <= NOW() AND removed_on IS NULL",
+        )
+        .execute(self.pool)
+        .await
+        .map(|r| r.rows_affected())
     }
 
     pub async fn set_evidence_thread(&self, uuid: &str, thread_url: &str) -> Result<bool, sqlx::Error> {

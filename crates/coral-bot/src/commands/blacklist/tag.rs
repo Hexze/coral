@@ -6,11 +6,11 @@ use coral_redis::BlacklistEvent;
 use database::{BlacklistRepository, CacheRepository, MemberRepository};
 use serenity::all::*;
 
-use super::channel::{self, COLOR_DANGER, COLOR_FALLBACK, COLOR_INFO, COLOR_SUCCESS, format_added_line};
+use super::channel::{self, COLOR_DANGER, format_added_line};
 use crate::framework::{AccessRank, AccessRankExt, Data};
 use crate::interact;
 use crate::interact::send_deferred_error;
-use crate::utils::{format_uuid_dashed, sanitize_reason};
+use crate::utils::{format_tag_detail, format_uuid_dashed, sanitize_reason};
 
 const FACE_SIZE: u32 = 128;
 const FACE_FILENAME: &str = "face.png";
@@ -23,17 +23,25 @@ fn face_thumbnail() -> CreateThumbnail<'static> {
 }
 
 
-async fn face_attachment(data: &Data, uuid: &str) -> Option<CreateAttachment<'static>> {
-    let png = data.skin_provider.fetch_face(uuid, FACE_SIZE).await?;
-    Some(CreateAttachment::bytes(png, FACE_FILENAME))
+async fn face_attachment(data: &Data, uuid: &str) -> CreateAttachment<'static> {
+    let png = data.skin_provider.fetch_face(uuid, FACE_SIZE).await
+        .unwrap_or_else(default_face);
+    CreateAttachment::bytes(png, FACE_FILENAME)
+}
+
+fn default_face() -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(FACE_SIZE, FACE_SIZE, image::Rgba([0, 0, 0, 0]));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+    buf.into_inner()
 }
 
 
-fn section_header(title: String) -> CreateSection<'static> {
-    CreateSection::new(
-        vec![CreateSectionComponent::TextDisplay(CreateTextDisplay::new(title))],
+fn face_section(parts: Vec<String>) -> CreateContainerComponent<'static> {
+    CreateContainerComponent::Section(CreateSection::new(
+        vec![CreateSectionComponent::TextDisplay(CreateTextDisplay::new(parts.join("\n")))],
         CreateSectionAccessory::Thumbnail(face_thumbnail()),
-    )
+    ))
 }
 
 
@@ -42,11 +50,10 @@ fn container_response(container: CreateContainer<'static>) -> Vec<CreateComponen
 }
 
 
-fn simple_result(emote: &str, msg: &str, color: u32) -> CreateContainer<'static> {
+fn simple_result(emote: &str, msg: &str) -> CreateContainer<'static> {
     CreateContainer::new(vec![CreateContainerComponent::TextDisplay(
         CreateTextDisplay::new(format!("## {emote} {msg}")),
     )])
-    .accent_color(color)
 }
 
 
@@ -113,6 +120,7 @@ impl TagChangeEntry {
 fn tag_choices(option: CreateCommandOption<'static>) -> CreateCommandOption<'static> {
     blacklist::user_addable()
         .iter()
+        .filter(|tag| tag.name != "replays_needed")
         .fold(option, |opt, tag| opt.add_string_choice(tag.display_name, tag.name))
 }
 
@@ -145,6 +153,7 @@ pub fn register() -> CreateCommand<'static> {
                 ))
                 .add_sub_option(
                     CreateCommandOption::new(CommandOptionType::String, "reason", "Reason for the tag")
+                        .required(true)
                         .max_length(120),
                 )
                 .add_sub_option(CreateCommandOption::new(
@@ -264,14 +273,14 @@ async fn get_rank_and_member(
 }
 
 
-enum MemberCheck {
+pub(super) enum MemberCheck {
     Ok(AccessRank, database::Member),
     NotLinked,
     NotInGuild,
 }
 
 
-async fn require_linked_member(ctx: &Context, data: &Data, discord_id: u64) -> Result<MemberCheck> {
+pub(super) async fn require_linked_member(ctx: &Context, data: &Data, discord_id: u64) -> Result<MemberCheck> {
     let (rank, member) = get_rank_and_member(data, discord_id).await?;
     let Some(member) = member.filter(|m| m.uuid.is_some()) else {
         return Ok(MemberCheck::NotLinked);
@@ -295,9 +304,7 @@ async fn send_tag_response(
     let mut resp = EditInteractionResponse::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(container_response(container));
-    if let Some(att) = face_attachment(data, uuid).await {
-        resp = resp.new_attachment(att);
-    }
+    resp = resp.new_attachment(face_attachment(data, uuid).await);
     command.edit_response(&ctx.http, resp).await?;
     Ok(())
 }
@@ -328,29 +335,22 @@ async fn run_view(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
 
     if player_tags.is_empty() {
         let container = CreateContainer::new(vec![
-            CreateContainerComponent::Section(section_header(format!(
-                "## No Tags\n`{}` is not tagged.", player_info.username
-            ))),
-            CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+            face_section(vec![
+                format!("## No Tags\n`{}` is not tagged.", player_info.username),
+                format!("-# UUID: {dashed_uuid}"),
+            ]),
             CreateContainerComponent::Separator(CreateSeparator::new(true)),
         ]);
         let mut resp = EditInteractionResponse::new()
             .flags(MessageFlags::IS_COMPONENTS_V2)
             .components(container_response(container));
-        if let Some(att) = face {
-            resp = resp.new_attachment(att);
-        }
+        resp = resp.new_attachment(face);
         command.edit_response(&ctx.http, resp).await?;
         return Ok(());
     }
 
     let evidence_thread = player_data.as_ref().and_then(|p| p.evidence_thread.as_ref());
     let lock_indicator = if is_locked { " \u{1F512}" } else { "" };
-
-    let header = section_header(format!(
-        "## {} Tagged User{}\nIGN - `{}`",
-        EMOTE_TAG, lock_indicator, player_info.username
-    ));
 
     let unique_ids: Vec<i64> = {
         let mut seen = std::collections::HashSet::new();
@@ -389,8 +389,9 @@ async fn run_view(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
         resolved_names.insert(id, name);
     }
 
-    let mut components: Vec<CreateContainerComponent> =
-        vec![CreateContainerComponent::Section(header)];
+    let mut parts = vec![format!(
+        "## {} Tagged User{}\nIGN - `{}`\n", EMOTE_TAG, lock_indicator, player_info.username
+    )];
 
     for tag in &player_tags {
         let def = lookup_tag(&tag.tag_type);
@@ -427,30 +428,32 @@ async fn run_view(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
         };
 
         let mut display = format!(
-            "{} {}{}\n> {}\n{}",
-            emote, display_name, evidence_indicator, sanitize_reason(&tag.reason), added_line
+            "**{} {}**{}\n> {}\n{}",
+            emote, display_name, evidence_indicator, format_tag_detail(tag), added_line
         );
         if let Some(line) = reviewed_line {
             display.push('\n');
             display.push_str(&line);
         }
 
-        components.push(CreateContainerComponent::TextDisplay(CreateTextDisplay::new(display)));
+        parts.push(display);
     }
 
     let mut footer = format!("-# UUID: {dashed_uuid}");
     if let Some(ref evidence_url) = player_data.as_ref().and_then(|p| p.evidence_thread.as_ref()) {
         footer.push_str(&format!(" | [Evidence]({evidence_url})"));
     }
-    components.push(CreateContainerComponent::TextDisplay(CreateTextDisplay::new(footer)));
-    components.push(CreateContainerComponent::Separator(CreateSeparator::new(true)));
+    parts.push(footer);
+
+    let components: Vec<CreateContainerComponent> = vec![
+        face_section(parts),
+        CreateContainerComponent::Separator(CreateSeparator::new(true)),
+    ];
 
     let mut resp = EditInteractionResponse::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(container_response(CreateContainer::new(components)));
-    if let Some(att) = face {
-        resp = resp.new_attachment(att);
-    }
+    resp = resp.new_attachment(face);
     command.edit_response(&ctx.http, resp).await?;
     Ok(())
 }
@@ -475,7 +478,7 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
     let player = get_string(&options, "player");
     let tag_type = get_string(&options, "type");
     let reason = get_string(&options, "reason");
-    let hide = get_bool(&options, "hide") && rank >= AccessRank::Moderator;
+    let hide = get_bool(&options, "hide") && blacklist::permissions::can_set_hide(rank.to_level());
 
     if tag_type == "confirmed_cheater" {
         return send_deferred_error(
@@ -483,15 +486,14 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
             "Confirmed cheater tags can only be applied through the review system",
         ).await;
     }
-    if tag_type == "caution" && rank < AccessRank::Moderator {
+    if tag_type == "caution" && !blacklist::permissions::can_add("caution", rank.to_level()) {
         return send_deferred_error(ctx, command, "Error", "Only moderators and above can add caution tags").await;
     }
-    if tag_type == "replays_needed" && rank < AccessRank::Member {
-        return send_deferred_error(ctx, command, "Error", "Only members and above can add replays needed tags").await;
+    if tag_type == "replays_needed" {
+        return send_deferred_error(ctx, command, "Error", "Use the /watch command to add replays needed tags").await;
     }
 
-    let reason = if tag_type == "replays_needed" { "" } else { reason };
-    if reason.is_empty() && tag_type != "replays_needed" {
+    if reason.is_empty() {
         return send_deferred_error(ctx, command, "Error", "A reason is required for this tag type").await;
     }
 
@@ -500,24 +502,16 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
         _ => false,
     };
 
-    let (player_name, player_uuid, is_nicked) = match data.api.resolve(player).await {
-        Ok(info) => (info.username, info.uuid, false),
-        Err(_) => (player.to_string(), String::new(), true),
+    let player_info = match data.api.resolve(player).await {
+        Ok(info) => info,
+        Err(_) => return send_deferred_error(ctx, command, "Error", "Player not found").await,
     };
-
-    if is_nicked {
-        if !is_valid_minecraft_name(&player_name) {
-            return send_deferred_error(
-                ctx, command, "Error",
-                "Invalid username. Minecraft names can only contain letters, numbers, and underscores (3-16 characters)",
-            ).await;
-        }
-        needs_review = true;
-    }
+    let player_name = player_info.username;
+    let player_uuid = player_info.uuid;
 
     if needs_review {
         let components = super::reviews::build_confirmation_message(
-            discord_id, &player_name, &player_uuid, tag_type, reason, is_nicked,
+            discord_id, &player_name, &player_uuid, tag_type, reason, false,
         );
         command
             .edit_response(
@@ -550,21 +544,6 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
         .find(|t| lookup_tag(&t.tag_type).map(|d| d.priority).unwrap_or(0) == new_priority);
 
     if let Some(conflict) = conflicting_tag {
-        if conflict.tag_type == tag_type {
-            let components = super::reviews::build_confirmation_message(
-                discord_id, &player_info.username, &player_info.uuid, tag_type, reason, false,
-            );
-            command
-                .edit_response(
-                    &ctx.http,
-                    EditInteractionResponse::new()
-                        .flags(MessageFlags::IS_COMPONENTS_V2)
-                        .components(components),
-                )
-                .await?;
-            return Ok(());
-        }
-
         if rank < AccessRank::Member {
             return send_deferred_error(ctx, command, "Error", "You need member access to overwrite existing tags").await;
         }
@@ -579,7 +558,6 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
         let new_def = lookup_tag(tag_type);
         let new_emote = new_def.map(|d| d.emote).unwrap_or("");
         let new_display = new_def.map(|d| d.display_name).unwrap_or(tag_type);
-        let new_color = new_def.map(|d| d.color).unwrap_or(COLOR_FALLBACK);
 
         let dashed_uuid = format_uuid_dashed(&player_info.uuid);
         let overwrite_key = command.id.to_string();
@@ -606,22 +584,20 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
         };
 
         let container = CreateContainer::new(vec![
-            CreateContainerComponent::Section(section_header(format!(
-                "## {} Tag Overwrite\nIGN - `{}`", EMOTE_EDITTAG, player_info.username
-            ))),
-            CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-                "{} {}\n> {}\n{}", old_emote, old_display, sanitize_reason(&conflict.reason), old_tag_added
-            ))),
-            CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+            face_section(vec![
+                format!("## {} Tag Overwrite\nIGN - `{}`", EMOTE_EDITTAG, player_info.username),
+                format!("**{} {}**\n> {}\n{}", old_emote, old_display, format_tag_detail(conflict), old_tag_added),
+                format!("-# UUID: {dashed_uuid}"),
+            ]),
             CreateContainerComponent::Separator(CreateSeparator::new(true)),
             CreateContainerComponent::Section(CreateSection::new(
                 vec![CreateSectionComponent::TextDisplay(CreateTextDisplay::new(format!(
-                    "{} {}\n> {}{}", new_emote, new_display, sanitize_reason(reason), new_tag_added
+                    "**{} {}**\n> {}{}", new_emote, new_display, sanitize_reason(reason), new_tag_added
                 )))],
                 CreateSectionAccessory::Button(button),
             )),
         ])
-        .accent_color(new_color);
+;
 
         let mut resp = EditInteractionResponse::new()
             .flags(MessageFlags::IS_COMPONENTS_V2)
@@ -631,9 +607,7 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
                 )),
                 CreateComponent::Container(container),
             ]);
-        if let Some(att) = face_attachment(data, &player_info.uuid).await {
-            resp = resp.new_attachment(att);
-        }
+        resp = resp.new_attachment(face_attachment(data, &player_info.uuid).await);
         command.edit_response(&ctx.http, resp).await?;
         return Ok(());
     }
@@ -646,7 +620,6 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
     let def = lookup_tag(tag_type);
     let emote = def.map(|d| d.emote).unwrap_or("");
     let display_name = def.map(|d| d.display_name).unwrap_or(tag_type);
-    let color = def.map(|d| d.color).unwrap_or(COLOR_FALLBACK);
     let dashed_uuid = format_uuid_dashed(&player_info.uuid);
 
     let added_line = match &new_tag {
@@ -667,13 +640,11 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
 
     let tag_id = new_tag.map(|t| t.id).unwrap_or(0);
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(section_header(format!(
-            "## {} New Tag Applied\nIGN - `{}`", EMOTE_ADDTAG, player_info.username
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "{} {}\n> {}\n{}", emote, display_name, sanitize_reason(reason), added_line
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+        face_section(vec![
+            format!("## {} New Tag Applied\nIGN - `{}`", EMOTE_ADDTAG, player_info.username),
+            format!("**{} {}**\n> {}\n{}", emote, display_name, sanitize_reason(reason), added_line),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
         CreateContainerComponent::ActionRow(CreateActionRow::buttons(vec![
             CreateButton::new(format!("tag_edit:{tag_id}")).label("Edit").style(ButtonStyle::Secondary),
@@ -683,7 +654,7 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
             "-# You can also use /tag change within 30 minutes to update this tag",
         )),
     ])
-    .accent_color(color);
+;
 
     send_tag_response(ctx, command, data, &player_info.uuid, container).await
 }
@@ -705,39 +676,28 @@ pub async fn handle_overwrite_button(
     let discord_id = component.user.id.get();
     let rank = get_rank(data, discord_id).await?;
 
-    if rank < AccessRank::Member {
-        return send_component_message(ctx, component, "You need member access to overwrite tags").await;
-    }
-
     let cache = CacheRepository::new(data.db.pool());
     let player_name = cache.get_username(uuid).await.ok().flatten().unwrap_or_else(|| uuid.to_string());
 
-    let repo = BlacklistRepository::new(data.db.pool());
-    if let Some(player_data) = repo.get_player(uuid).await? {
-        if player_data.is_locked {
-            return send_component_message(ctx, component, "This player's tags are locked").await;
-        }
-    }
-
-    let existing_tags = repo.get_tags(uuid).await?;
-    let Some(old_tag) = existing_tags.iter().find(|t| t.id == overwrite.old_tag_id) else {
-        return send_component_message(ctx, component, "The original tag no longer exists").await;
+    let ops = database::TagOp::new(data.db.pool());
+    let (old_tag_clone, new_tag_row) = match ops.overwrite(
+        uuid, overwrite.old_tag_id, &overwrite.tag_type, &overwrite.reason,
+        discord_id as i64, rank.to_level(), overwrite.hide,
+    ).await {
+        Ok(result) => result,
+        Err(database::TagOpError::TagNotFound) =>
+            return send_component_message(ctx, component, "The original tag no longer exists").await,
+        Err(database::TagOpError::InsufficientPermissions) =>
+            return send_component_message(ctx, component, "You don't have permission to overwrite this tag").await,
+        Err(database::TagOpError::PlayerLocked) =>
+            return send_component_message(ctx, component, "This player's tags are locked").await,
+        Err(e) => return Err(anyhow::anyhow!("{e:?}")),
     };
-    if old_tag.tag_type == "confirmed_cheater" && rank < AccessRank::Helper {
-        return send_component_message(ctx, component, "Only helpers and above can overwrite confirmed cheater tags").await;
-    }
-
-    let old_tag_clone = old_tag.clone();
-    repo.remove_tag(overwrite.old_tag_id, discord_id as i64).await?;
-    repo.add_tag(uuid, &overwrite.tag_type, &overwrite.reason, discord_id as i64, overwrite.hide, None).await?;
-
-    let new_tags = repo.get_tags(uuid).await?;
-    let new_tag = new_tags.iter().find(|t| t.tag_type == overwrite.tag_type);
+    let new_tag = Some(&new_tag_row);
 
     let def = lookup_tag(&overwrite.tag_type);
     let emote = def.map(|d| d.emote).unwrap_or("");
     let display_name = def.map(|d| d.display_name).unwrap_or(&overwrite.tag_type);
-    let color = def.map(|d| d.color).unwrap_or(COLOR_FALLBACK);
     let dashed_uuid = format_uuid_dashed(uuid);
 
     let added_line = match &new_tag {
@@ -747,23 +707,18 @@ pub async fn handle_overwrite_button(
     };
 
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(section_header(format!(
-            "## {} Tag Overwritten\nIGN - `{}`", EMOTE_EDITTAG, player_name
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "{} {}\n> {}\n{}", emote, display_name, sanitize_reason(&overwrite.reason), added_line
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+        face_section(vec![
+            format!("## {} Tag Overwritten\nIGN - `{}`", EMOTE_EDITTAG, player_name),
+            format!("**{} {}**\n> {}\n{}", emote, display_name, sanitize_reason(&overwrite.reason), added_line),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
-    ])
-    .accent_color(color);
+    ]);
 
     let mut msg = CreateInteractionResponseMessage::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(container_response(container));
-    if let Some(att) = face_attachment(data, uuid).await {
-        msg = msg.add_file(att);
-    }
+    msg = msg.add_file(face_attachment(data, uuid).await);
     component.create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(msg)).await?;
 
     if let Some(new_tag) = &new_tag {
@@ -794,17 +749,9 @@ async fn run_remove(ctx: &Context, command: &CommandInteraction, data: &Data) ->
         MemberCheck::NotLinked =>
             return send_deferred_error(ctx, command, "Error", "You must link your account to remove tags").await,
     };
-    if rank < AccessRank::Helper {
-        return send_deferred_error(ctx, command, "Error", "Only helpers and above can remove tags").await;
-    }
-
     let options = get_sub_options(command);
     let player = get_string(&options, "player");
     let tag_type = get_string(&options, "type");
-
-    if (tag_type == "confirmed_cheater" || tag_type == "caution") && rank < AccessRank::Moderator {
-        return send_deferred_error(ctx, command, "Error", "Only moderators and above can remove this tag type").await;
-    }
 
     let player_info = match data.api.resolve(player).await {
         Ok(info) => info,
@@ -822,6 +769,10 @@ async fn run_remove(ctx: &Context, command: &CommandInteraction, data: &Data) ->
     let Some(tag) = player_tags.iter().find(|t| t.tag_type == tag_type) else {
         return send_deferred_error(ctx, command, "Error", &format!("Player doesn't have a {} tag", tag_type)).await;
     };
+
+    if !can_remove_tag(rank, tag, discord_id) {
+        return send_deferred_error(ctx, command, "Error", "You don't have permission to remove this tag").await;
+    }
 
     let tag_clone = tag.clone();
     if !repo.remove_tag(tag.id, discord_id as i64).await? {
@@ -843,13 +794,11 @@ async fn run_remove(ctx: &Context, command: &CommandInteraction, data: &Data) ->
     let added_line = format_added_line(ctx, &tag_clone).await;
 
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(section_header(format!(
-            "## {} Tag Removed\nIGN - `{}`", EMOTE_REMOVETAG, player_info.username
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!(
-            "{} {}\n> {}\n{}", emote, display_name, sanitize_reason(&tag_clone.reason), added_line
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+        face_section(vec![
+            format!("## {} Tag Removed\nIGN - `{}`", EMOTE_REMOVETAG, player_info.username),
+            format!("**{} {}**\n> {}\n{}", emote, display_name, format_tag_detail(&tag_clone), added_line),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
     ])
     .accent_color(COLOR_DANGER);
@@ -879,10 +828,6 @@ async fn run_change(ctx: &Context, command: &CommandInteraction, data: &Data) ->
         MemberCheck::NotLinked =>
             return send_deferred_error(ctx, command, "Error", "You must link your account to modify tags").await,
     };
-    if rank < AccessRank::Member {
-        return send_deferred_error(ctx, command, "Error", "You need member access to modify tags").await;
-    }
-
     let options = get_sub_options(command);
     let player = get_string(&options, "player");
 
@@ -918,7 +863,7 @@ async fn run_change(ctx: &Context, command: &CommandInteraction, data: &Data) ->
                 new_type: None,
                 new_reason: None,
                 claimed: false,
-                hide: if is_staff { None } else { Some(false) },
+                hide: if blacklist::permissions::can_set_hide(rank.to_level()) { None } else { Some(false) },
                 removed: false,
                 editable,
             }
@@ -965,9 +910,7 @@ async fn run_change(ctx: &Context, command: &CommandInteraction, data: &Data) ->
     let mut resp = EditInteractionResponse::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(components);
-    if let Some(att) = face_attachment(data, &player_info.uuid).await {
-        resp = resp.new_attachment(att);
-    }
+    resp = resp.new_attachment(face_attachment(data, &player_info.uuid).await);
     let msg = command.edit_response(&ctx.http, resp).await?;
 
     let face_url = msg.attachments.iter()
@@ -1005,14 +948,13 @@ async fn run_lock(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
 
     let dashed_uuid = format_uuid_dashed(&player_info.uuid);
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(section_header(format!(
-            "## {} Player Locked \u{1F512}\nIGN - `{}`", EMOTE_TAG, player_info.username
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("> {}", sanitize_reason(reason)))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+        face_section(vec![
+            format!("## {} Player Locked \u{1F512}\nIGN - `{}`", EMOTE_TAG, player_info.username),
+            format!("> {}", sanitize_reason(reason)),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
-    ])
-    .accent_color(COLOR_DANGER);
+    ]);
 
     send_tag_response(ctx, command, data, &player_info.uuid, container).await?;
 
@@ -1052,37 +994,33 @@ async fn run_unlock(ctx: &Context, command: &CommandInteraction, data: &Data) ->
 
     if !unlocked {
         let container = CreateContainer::new(vec![
-            CreateContainerComponent::Section(section_header(format!(
-                "## Not Locked\nIGN - `{}`", player_info.username
-            ))),
-            CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+            face_section(vec![
+                format!("## Not Locked\nIGN - `{}`", player_info.username),
+                format!("-# UUID: {dashed_uuid}"),
+            ]),
             CreateContainerComponent::Separator(CreateSeparator::new(true)),
         ]);
         let mut resp = EditInteractionResponse::new()
             .flags(MessageFlags::IS_COMPONENTS_V2)
             .components(container_response(container));
-        if let Some(att) = face {
-            resp = resp.new_attachment(att);
-        }
+        resp = resp.new_attachment(face);
         command.edit_response(&ctx.http, resp).await?;
         return Ok(());
     }
 
     let container = CreateContainer::new(vec![
-        CreateContainerComponent::Section(section_header(format!(
-            "## {} Player Unlocked \u{1F513}\nIGN - `{}`", EMOTE_TAG, player_info.username
-        ))),
-        CreateContainerComponent::TextDisplay(CreateTextDisplay::new(format!("-# UUID: {dashed_uuid}"))),
+        face_section(vec![
+            format!("## {} Player Unlocked \u{1F513}\nIGN - `{}`", EMOTE_TAG, player_info.username),
+            format!("-# UUID: {dashed_uuid}"),
+        ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
     ])
-    .accent_color(COLOR_SUCCESS);
+;
 
     let mut resp = EditInteractionResponse::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(container_response(container));
-    if let Some(att) = face {
-        resp = resp.new_attachment(att);
-    }
+    resp = resp.new_attachment(face);
     command.edit_response(&ctx.http, resp).await?;
 
     data.event_publisher
@@ -1139,7 +1077,11 @@ fn build_tag_change_menu(pending: &PendingTagChanges, key: &str) -> Vec<CreateCo
         let display_name = def.map(|d| d.display_name).unwrap_or(eff_type);
 
         if entry.editable {
-            let options = tc_type_options(eff_type, pending.rank);
+            let sibling_types: Vec<&str> = pending.entries.iter()
+                .filter(|e| !e.removed)
+                .map(|e| e.original.tag_type.as_str())
+                .collect();
+            let options = tc_type_options(eff_type, pending.rank, &sibling_types);
             if !options.is_empty() {
                 let select = CreateSelectMenu::new(
                     format!("tc_type:{key}:{idx}"),
@@ -1156,7 +1098,11 @@ fn build_tag_change_menu(pending: &PendingTagChanges, key: &str) -> Vec<CreateCo
             .unwrap_or(if entry.claimed { &pending.owner_name } else { "unknown" });
 
         let hide_label = if entry.effective_hide() { " *(hidden)*" } else { "" };
-        let reason_text = sanitize_reason(entry.effective_reason());
+        let reason_text = if entry.original.tag_type == "replays_needed" {
+            format_tag_detail(&entry.original)
+        } else {
+            sanitize_reason(entry.effective_reason())
+        };
 
         let tag_display = format!(
             "{emote} {display_name}\n> {reason_text}\n> -# **\\- Added by `@{added_name}` <t:{}:R>**{hide_label}",
@@ -1171,7 +1117,7 @@ fn build_tag_change_menu(pending: &PendingTagChanges, key: &str) -> Vec<CreateCo
                     .style(ButtonStyle::Secondary),
             ];
 
-            if pending.is_staff {
+            if blacklist::permissions::can_set_hide(pending.rank.to_level()) {
                 let hide_btn = if entry.effective_hide() {
                     CreateButton::new(format!("tc_hide:{key}:{idx}"))
                         .label("Unhide")
@@ -1225,20 +1171,29 @@ fn build_tag_change_menu(pending: &PendingTagChanges, key: &str) -> Vec<CreateCo
     }
     parts.push(CreateContainerComponent::ActionRow(CreateActionRow::buttons(save_buttons)));
 
-    vec![CreateComponent::Container(CreateContainer::new(parts).accent_color(COLOR_INFO))]
+    vec![CreateComponent::Container(CreateContainer::new(parts))]
 }
 
 
-fn tc_type_options(current: &str, rank: AccessRank) -> Vec<CreateSelectMenuOption<'static>> {
-    if current == "confirmed_cheater" && rank < AccessRank::Moderator {
+fn tc_type_options(current: &str, rank: AccessRank, sibling_types: &[&str]) -> Vec<CreateSelectMenuOption<'static>> {
+    let level = rank.to_level();
+    if !blacklist::permissions::can_modify(current, level, true, 0) {
         return vec![];
     }
+
+    let current_pri = blacklist::lookup(current).map(|d| d.priority).unwrap_or(0);
+    let blocked_priorities: Vec<u8> = sibling_types.iter()
+        .filter(|&&t| t != current)
+        .filter_map(|t| blacklist::lookup(t).map(|d| d.priority))
+        .filter(|&p| p != current_pri)
+        .collect();
+
     blacklist::user_addable()
         .iter()
         .filter(|tag| {
             tag.name != current
-                && !(tag.name == "caution" && rank < AccessRank::Moderator)
-                && !(tag.name == "replays_needed" && rank < AccessRank::Member)
+                && blacklist::permissions::can_change_to(tag.name, level)
+                && !blocked_priorities.contains(&tag.priority)
         })
         .map(|tag| CreateSelectMenuOption::new(tag.display_name, tag.name))
         .collect()
@@ -1246,13 +1201,9 @@ fn tc_type_options(current: &str, rank: AccessRank) -> Vec<CreateSelectMenuOptio
 
 
 fn can_remove_tag(rank: AccessRank, tag: &database::PlayerTagRow, user_id: u64) -> bool {
-    if rank >= AccessRank::Moderator { return true; }
-    if rank >= AccessRank::Helper {
-        return tag.tag_type != "confirmed_cheater" && tag.tag_type != "caution";
-    }
     let is_own = tag.added_by == user_id as i64;
-    let within_window = chrono::Utc::now().signed_duration_since(tag.added_on).num_minutes() <= 30;
-    is_own && within_window
+    let age = chrono::Utc::now().signed_duration_since(tag.added_on).num_minutes();
+    blacklist::permissions::can_remove(&tag.tag_type, rank.to_level(), is_own, age)
 }
 
 
@@ -1446,9 +1397,24 @@ pub async fn handle_tc_save(
             .filter(|&id| id != entry.original.added_by);
         let new_hide = entry.hide.filter(|&h| h != entry.original.hide_username);
 
+        let level = pending.rank.to_level();
+        let is_own = entry.original.added_by == pending.owner_id as i64;
+        let age = chrono::Utc::now().signed_duration_since(entry.original.added_on).num_minutes();
+
+        if !blacklist::permissions::can_modify(&old_type, level, is_own, age) { continue; }
+
         if let Some(t) = new_type {
-            if old_type == "confirmed_cheater" && pending.rank < AccessRank::Moderator { continue; }
-            if t == "caution" && pending.rank < AccessRank::Moderator { continue; }
+            if !blacklist::permissions::can_change_to(t, level) { continue; }
+            let new_pri = blacklist::lookup(t).map(|d| d.priority).unwrap_or(0);
+            let old_pri = blacklist::lookup(&old_type).map(|d| d.priority).unwrap_or(0);
+            if new_pri != old_pri {
+                let existing = repo.get_tags(&pending.uuid).await.unwrap_or_default();
+                let conflict = existing.iter().any(|tag|
+                    tag.id != entry.tag_id
+                    && blacklist::lookup(&tag.tag_type).map(|d| d.priority).unwrap_or(255) == new_pri
+                );
+                if conflict { continue; }
+            }
             if old_type == "confirmed_cheater" {
                 try_archive_evidence(&repo, ctx, data, &pending.uuid).await;
             }
@@ -1475,9 +1441,6 @@ pub async fn handle_tc_save(
                     old_reason,
                     edited_by: pending.owner_id as i64,
                 }).await;
-                if let Some(tag) = repo.get_tag_by_id(entry.tag_id).await? {
-                    channel::post_overwritten_tag(ctx, data, &pending.uuid, &name, &tag).await;
-                }
             }
         }
     }
@@ -1499,7 +1462,7 @@ pub async fn handle_tc_save(
             CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
                     .flags(MessageFlags::IS_COMPONENTS_V2)
-                    .components(container_response(simple_result(EMOTE_EDITTAG, &msg, COLOR_SUCCESS))),
+                    .components(container_response(simple_result(EMOTE_EDITTAG, &msg))),
             ),
         )
         .await?;
@@ -1534,6 +1497,7 @@ fn mock_change_tag(original: &database::PlayerTagRow, old_type: &str, old_reason
         reviewed_by: original.reviewed_by.clone(),
         removed_by: original.removed_by,
         removed_on: original.removed_on,
+        expires_at: original.expires_at,
     }
 }
 
@@ -1545,27 +1509,22 @@ pub async fn handle_undo(
 ) -> Result<()> {
     let tag_id = interact::parse_id(&component.data.custom_id).unwrap_or(0) as i64;
     let discord_id = component.user.id.get();
-    let rank = get_rank(data, discord_id).await?;
+    let (rank, _) = get_rank_and_member(data, discord_id).await?;
 
-    let repo = BlacklistRepository::new(data.db.pool());
-    let Some(tag) = repo.get_tag_by_id(tag_id).await? else {
-        return send_component_message(ctx, component, "Tag not found or already removed").await;
+    let ops = database::TagOp::new(data.db.pool());
+    let (uuid, tag) = match ops.remove_by_id(tag_id, discord_id as i64, rank.to_level()).await {
+        Ok(result) => result,
+        Err(database::TagOpError::TagNotFound) =>
+            return send_component_message(ctx, component, "Tag not found or already removed").await,
+        Err(database::TagOpError::InsufficientPermissions) =>
+            return send_component_message(ctx, component, "You don't have permission to remove this tag").await,
+        Err(database::TagOpError::PlayerLocked) =>
+            return send_component_message(ctx, component, "This player's tags are locked").await,
+        Err(e) => return Err(anyhow::anyhow!("{e:?}")),
     };
-    if tag.added_by != discord_id as i64 && rank < AccessRank::Helper {
-        return send_component_message(ctx, component, "You can only undo your own tags").await;
-    }
-    if rank < AccessRank::Helper {
-        let age = chrono::Utc::now().signed_duration_since(tag.added_on);
-        if age.num_minutes() > 30 {
-            return send_component_message(ctx, component, "The 30-minute undo window has passed").await;
-        }
-    }
-
-    let uuid = repo.get_uuid_by_player_id(tag.player_id).await?.unwrap_or_default();
-    repo.remove_tag(tag_id, discord_id as i64).await?;
 
     data.event_publisher
-        .publish(&BlacklistEvent::TagRemoved { uuid, tag_id, removed_by: discord_id as i64 })
+        .publish(&BlacklistEvent::TagRemoved { uuid, tag_id: tag.id, removed_by: discord_id as i64 })
         .await;
 
     component
@@ -1574,7 +1533,7 @@ pub async fn handle_undo(
             CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
                     .flags(MessageFlags::IS_COMPONENTS_V2)
-                    .components(container_response(simple_result(EMOTE_REMOVETAG, "Tag Removed", COLOR_DANGER))),
+                    .components(container_response(simple_result(EMOTE_REMOVETAG, "Tag Removed"))),
             ),
         )
         .await?;
@@ -1606,10 +1565,15 @@ pub async fn handle_edit(
         }
     }
 
+    let uuid = repo.get_uuid_by_player_id(tag.player_id).await.ok().flatten().unwrap_or_default();
+    let siblings: Vec<String> = if !uuid.is_empty() {
+        repo.get_tags(&uuid).await.unwrap_or_default().iter().map(|t| t.tag_type.clone()).collect()
+    } else { vec![] };
+
     let select = CreateSelectMenu::new(
         format!("tag_edit_type:{tag_id}"),
         CreateSelectMenuKind::String {
-            options: tag_choices_for_edit(&tag.tag_type).into(),
+            options: tag_choices_for_edit(&tag.tag_type, &siblings).into(),
         },
     )
     .placeholder("Change tag type");
@@ -1635,7 +1599,6 @@ pub async fn handle_edit(
                                     .style(ButtonStyle::Danger),
                             ])),
                         ])
-                        .accent_color(COLOR_INFO),
                     )),
             ),
         )
@@ -1666,18 +1629,13 @@ pub async fn handle_edit_type(
     let Some(tag) = repo.get_tag_by_id(tag_id).await? else {
         return send_component_message(ctx, component, "Tag not found or already removed").await;
     };
-    if tag.added_by != discord_id as i64 && rank < AccessRank::Helper {
-        return send_component_message(ctx, component, "Insufficient permissions").await;
-    }
-    if new_type == "confirmed_cheater" {
-        return send_component_message(
-            ctx, component, "Confirmed cheater tags can only be applied through the review system",
-        ).await;
-    }
-    if new_type == "caution" && rank < AccessRank::Moderator {
-        return send_component_message(
-            ctx, component, "Only moderators and above can assign caution tags",
-        ).await;
+
+    let level = rank.to_level();
+    let is_own = tag.added_by == discord_id as i64;
+    let age = chrono::Utc::now().signed_duration_since(tag.added_on).num_minutes();
+
+    if !blacklist::permissions::can_modify(&tag.tag_type, level, is_own, age) {
+        return send_component_message(ctx, component, "You don't have permission to modify this tag").await;
     }
 
     if new_type == "__revert" {
@@ -1710,7 +1668,6 @@ pub async fn handle_edit_type(
                         .components(container_response(simple_result(
                             EMOTE_EDITTAG,
                             &format!("Tag Reverted\nReverted to **{reverted_display}**"),
-                            COLOR_SUCCESS,
                         ))),
                 ),
             )
@@ -1718,10 +1675,30 @@ pub async fn handle_edit_type(
         return Ok(());
     }
 
+    if !blacklist::permissions::can_change_to(new_type, level) {
+        return send_component_message(ctx, component, "You don't have permission to change to this tag type").await;
+    }
+
+    let uuid = repo.get_uuid_by_player_id(tag.player_id).await.ok().flatten().unwrap_or_default();
+    if !uuid.is_empty() {
+        if let Some(player) = repo.get_player(&uuid).await? {
+            if player.is_locked {
+                return send_component_message(ctx, component, "This player's tags are locked").await;
+            }
+        }
+    }
+
+    let new_pri = blacklist::lookup(new_type).map(|d| d.priority).unwrap_or(0);
+    let old_pri = blacklist::lookup(&tag.tag_type).map(|d| d.priority).unwrap_or(0);
+    if new_pri != old_pri && !uuid.is_empty() {
+        let existing = repo.get_tags(&uuid).await.unwrap_or_default();
+        if existing.iter().any(|t| t.id != tag_id && blacklist::lookup(&t.tag_type).map(|d| d.priority).unwrap_or(255) == new_pri) {
+            return send_component_message(ctx, component, "Cannot change — conflicts with an existing tag").await;
+        }
+    }
+
     let old_tag = tag.clone();
     repo.modify_tag(tag_id, Some(new_type), None).await?;
-
-    let uuid = repo.get_uuid_by_player_id(old_tag.player_id).await.ok().flatten().unwrap_or_default();
     if !uuid.is_empty() {
         data.event_publisher
             .publish(&BlacklistEvent::TagEdited {
@@ -1744,7 +1721,6 @@ pub async fn handle_edit_type(
                     .components(container_response(simple_result(
                         EMOTE_EDITTAG,
                         &format!("Tag Updated\nType changed to **{display}**"),
-                        COLOR_SUCCESS,
                     ))),
             ),
         )
@@ -1829,7 +1805,7 @@ pub async fn handle_edit_reason_modal(
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
                     .flags(MessageFlags::IS_COMPONENTS_V2)
-                    .components(container_response(simple_result(EMOTE_EDITTAG, "Reason Updated", COLOR_SUCCESS)))
+                    .components(container_response(simple_result(EMOTE_EDITTAG, "Reason Updated")))
                     .ephemeral(true),
             ),
         )
@@ -1839,10 +1815,17 @@ pub async fn handle_edit_reason_modal(
 }
 
 
-fn tag_choices_for_edit(current: &str) -> Vec<CreateSelectMenuOption<'static>> {
+fn tag_choices_for_edit(current: &str, sibling_types: &[String]) -> Vec<CreateSelectMenuOption<'static>> {
+    let current_pri = blacklist::lookup(current).map(|d| d.priority).unwrap_or(0);
+    let blocked: Vec<u8> = sibling_types.iter()
+        .filter(|t| t.as_str() != current)
+        .filter_map(|t| blacklist::lookup(t).map(|d| d.priority))
+        .filter(|&p| p != current_pri)
+        .collect();
+
     let mut options: Vec<CreateSelectMenuOption<'static>> = blacklist::user_addable()
         .iter()
-        .filter(|tag| tag.name != current)
+        .filter(|tag| tag.name != current && !blocked.contains(&tag.priority))
         .map(|tag| CreateSelectMenuOption::new(tag.display_name, tag.name))
         .collect();
 

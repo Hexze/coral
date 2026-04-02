@@ -8,7 +8,8 @@ use super::{*, state::*};
 
 
 pub fn build_header(state: &SubmissionState) -> CreateContainerComponent<'static> {
-    text(format!("## {} Tag Review\n-# Submitted by <@{}>", EMOTE_TAG, state.submitter_id))
+    let status = if state.submitted { " — awaiting review" } else { "" };
+    text(format!("## {} Tag Review{status}\n-# Submitted by <@{}>", EMOTE_TAG, state.submitter_id))
 }
 
 
@@ -25,7 +26,7 @@ pub fn build_review_message(
 
     for (idx, player) in state.players.iter().enumerate() {
         let is_editing = state.editing == Some(idx);
-        build_player_card(&mut parts, player, idx, id, !state.submitted && !is_editing);
+        build_player_card(&mut parts, player, idx, id, !state.submitted);
 
         if is_editing {
             build_tag_edit_controls(&mut parts, player, idx, id);
@@ -39,7 +40,7 @@ pub fn build_review_message(
 
         if state.submitted {
             build_submitted_controls(&mut parts, player, idx, id);
-        } else if !is_editing {
+        } else {
             build_evidence_controls(&mut parts, player, idx, id);
         }
         parts.push(separator());
@@ -70,9 +71,21 @@ pub fn build_player_card(
     let def = lookup_tag(&player.tag_type);
     let emote = def.map(|d| d.emote).unwrap_or("");
     let display_name = def.map(|d| d.display_name).unwrap_or(&player.tag_type);
+    let (reason_block, uuid_line) = render_player_details(player);
 
-    parts.push(text(format!("{emote} {display_name} \u{2014} `{}`", player.username)));
-    parts.push(text(render_player_details(player)));
+    parts.push(text(format!("IGN - `{}`", player.username)));
+
+    if CONFIRMABLE_TAGS.contains(&player.tag_type.as_str()) {
+        let confirmed_emote = lookup_tag("confirmed_cheater").map(|d| d.emote).unwrap_or("");
+        parts.push(text(format!("**{confirmed_emote} Confirmed Cheater**")));
+        parts.push(text(format!("-# Currently **{emote} {display_name}**")));
+    } else {
+        parts.push(text(format!("**{emote} {display_name}**")));
+    }
+
+    parts.push(text(reason_block));
+    parts.push(text(uuid_line));
+    parts.push(separator());
 
     if show_edit_button {
         parts.push(CreateContainerComponent::ActionRow(CreateActionRow::Buttons(
@@ -191,7 +204,6 @@ pub fn build_submitted_footer(
     state: &SubmissionState,
     id: u64,
 ) {
-    parts.push(text("-# Submitted \u{2014} awaiting review"));
     if state.players.iter().any(|p| p.status == PlayerStatus::Pending) {
         parts.push(CreateContainerComponent::ActionRow(CreateActionRow::Buttons(
             vec![CreateButton::new(format!("review_edit_submitted:{id}"))
@@ -232,11 +244,13 @@ pub fn build_editing_footer(
 }
 
 
+
 pub fn build_vote_message(
     voter_id: u64,
     vote_type: &str,
     tag_type: &str,
     username: &str,
+    is_staff: bool,
     accept_count: usize,
     reject_count: usize,
 ) -> CreateMessage<'static> {
@@ -244,15 +258,21 @@ pub fn build_vote_message(
     let emote = def.map(|d| d.emote).unwrap_or("");
     let display_name = def.map(|d| d.display_name).unwrap_or(tag_type);
 
-    let total = if vote_type == "accept" { accept_count } else { reject_count };
-    let mut content = format!(
-        "<@{voter_id}> voted to **{vote_type}** the {emote} **{display_name}** tag on `{username}`. [{total}/3]"
-    );
-    if accept_count > 0 && reject_count > 0 {
-        content.push_str(&format!(
-            "\n-# {accept_count} accept, {reject_count} reject \u{2014} staff required to resolve"
-        ));
-    }
+    let content = if is_staff {
+        let action = if vote_type == "accept" { "approved" } else { "rejected" };
+        format!("<@{voter_id}> {action} the {emote} **{display_name}** tag on `{username}`.")
+    } else {
+        let total = if vote_type == "accept" { accept_count } else { reject_count };
+        let mut msg = format!(
+            "<@{voter_id}> voted to **{vote_type}** the {emote} **{display_name}** tag on `{username}`. [{total}/3]"
+        );
+        if accept_count > 0 && reject_count > 0 {
+            msg.push_str(&format!(
+                "\n-# {accept_count} accept, {reject_count} reject \u{2014} staff required to resolve"
+            ));
+        }
+        msg
+    };
 
     CreateMessage::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)

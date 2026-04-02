@@ -163,6 +163,11 @@ async fn send_thread_message(ctx: &Context, channel_id: GenericChannelId, conten
 }
 
 
+fn thread_title(state: &SubmissionState) -> String {
+    state.players.iter().map(|p| p.username.as_str()).collect::<Vec<_>>().join(", ")
+}
+
+
 async fn update_builder(
     ctx: &Context,
     channel_id: GenericChannelId,
@@ -173,8 +178,11 @@ async fn update_builder(
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(builder::build_review_message(state, &gallery_url_map(message)));
     ctx.http.edit_message(channel_id, message.id, &edit, Vec::new()).await?;
+    let thread_id = channel_id.expect_thread();
+    let _ = thread_id.edit(&ctx.http, EditThread::new().name(thread_title(state))).await;
     Ok(())
 }
+
 
 
 fn gallery_url_map(message: &Message) -> HashMap<String, String> {
@@ -299,7 +307,10 @@ pub async fn create_submission(
         anyhow::bail!("Review forum channel not configured");
     };
 
-    let display_name = lookup_tag(tag_type).map(|d| d.display_name).unwrap_or(tag_type);
+    if !REVIEW_TAGS.contains(&tag_type) && !CONFIRMABLE_TAGS.contains(&tag_type) {
+        anyhow::bail!("Tag type '{}' cannot be submitted for review", tag_type);
+    }
+
     let player = PlayerEntry {
         username: player_name.to_string(),
         uuid: player_uuid.to_string(),
@@ -327,7 +338,7 @@ pub async fn create_submission(
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .components(builder::build_review_message(&state, &HashMap::new()));
 
-    let mut forum_post = CreateForumPost::new(format!("{player_name} \u{2014} {display_name}"), message);
+    let mut forum_post = CreateForumPost::new(player_name.to_string(), message);
     let tags = resolve_forum_tags(ctx, data).await;
     if let Some(tag_id) = tags.awaiting_evidence {
         forum_post = forum_post.add_applied_tag(tag_id);

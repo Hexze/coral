@@ -25,13 +25,13 @@ pub struct PlayerTagsResponse {
 
 #[derive(Serialize, ToSchema)]
 pub struct TagResponse {
-    pub id: i64,
     pub tag_type: String,
     pub reason: String,
     pub added_by: i64,
     pub added_on: i64,
-    pub added_on_readable: String,
     pub hide_username: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 
@@ -83,13 +83,12 @@ pub struct SuccessResponse {
 impl TagResponse {
     pub fn from_db(tag: &database::PlayerTagRow) -> Self {
         Self {
-            id: tag.id,
             tag_type: tag.tag_type.clone(),
             reason: tag.reason.clone(),
             added_by: tag.added_by,
             added_on: tag.added_on.timestamp_millis(),
-            added_on_readable: tag.added_on.format("%b %d, %Y %H:%M UTC").to_string(),
             hide_username: tag.hide_username,
+            expires_at: tag.expires_at.map(|t| t.timestamp_millis()),
         }
     }
 }

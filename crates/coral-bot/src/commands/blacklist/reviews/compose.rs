@@ -1,5 +1,4 @@
 use anyhow::Result;
-use blacklist::lookup as lookup_tag;
 use serenity::all::*;
 
 use crate::framework::Data;
@@ -82,7 +81,7 @@ pub async fn handle_pending_tag_select(
         ComponentInteractionDataKind::StringSelect { values } => values.first().map(|s| s.as_str()).unwrap_or(""),
         _ => return Ok(()),
     };
-    if lookup_tag(tag_type).is_none() { return Ok(()); }
+    if !super::REVIEW_TAGS.contains(&tag_type) { return Ok(()); }
 
     let custom_id = component.data.custom_id.strip_prefix("review_pending_tag:").unwrap_or("");
     let parts: Vec<&str> = custom_id.rsplitn(3, ':').collect();
@@ -119,8 +118,8 @@ pub async fn handle_addplayer_reason_modal(
     let tag_type = parts.get(2).unwrap_or(&"").to_string();
     let identifier = parts.get(3).unwrap_or(&"").to_string();
 
-    if lookup_tag(&tag_type).is_none() {
-        modal.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Unknown tag type: `{tag_type}`"))).await?;
+    if !super::REVIEW_TAGS.contains(&tag_type.as_str()) {
+        modal.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Invalid tag type: `{tag_type}`"))).await?;
         return Ok(());
     }
 
@@ -232,7 +231,7 @@ pub async fn handle_tag_select_edit(
         ComponentInteractionDataKind::StringSelect { values } => values.first().map(|s| s.as_str()).unwrap_or(""),
         _ => return Ok(()),
     };
-    if lookup_tag(tag_type).is_none() { return Ok(()); }
+    if !super::REVIEW_TAGS.contains(&tag_type) { return Ok(()); }
 
     let (player_idx, submitter_id) = parse_component_ids(&component.data.custom_id);
     let message = *component.message.clone();
@@ -269,8 +268,8 @@ pub async fn handle_edit_player_modal(
     let player_idx: usize = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let tag_type = parts.get(1).unwrap_or(&"").to_string();
 
-    if lookup_tag(&tag_type).is_none() {
-        modal.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Unknown tag type: `{tag_type}`"))).await?;
+    if !super::REVIEW_TAGS.contains(&tag_type.as_str()) {
+        modal.edit_response(&ctx.http, EditInteractionResponse::new().content(format!("Invalid tag type: `{tag_type}`"))).await?;
         return Ok(());
     }
 
