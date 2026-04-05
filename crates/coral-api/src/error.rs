@@ -31,8 +31,14 @@ impl IntoResponse for ApiError {
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             Self::Conflict(msg) => (StatusCode::CONFLICT, msg),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "Rate limited".into()),
-            Self::ExternalApi(msg) => (StatusCode::BAD_GATEWAY, msg),
-            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            Self::ExternalApi(ref msg) => {
+                tracing::error!("External API error: {msg}");
+                (StatusCode::BAD_GATEWAY, msg.clone())
+            }
+            Self::Internal(ref msg) => {
+                tracing::error!("Internal error: {msg}");
+                (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+            }
         };
         (status, Json(ErrorResponse { error: message })).into_response()
     }
