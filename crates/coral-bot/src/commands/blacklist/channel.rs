@@ -115,9 +115,19 @@ pub async fn post_tag_removed(
     send_to_mod_channel(ctx, data, container, vec![face]).await;
 
     if !silent {
-        let repo = BlacklistRepository::new(data.db.pool());
-        let all_tags = repo.get_tags(uuid).await.unwrap_or_default();
-        post_to_blacklist_channel(ctx, data, uuid, name, &all_tags, "Tag Removed", EMOTE_REMOVETAG).await;
+        let channel_id = match data.blacklist_channel_id { Some(id) => id, None => return };
+        let face = face_attachment(data, uuid).await;
+        let added_line = format_added_line(ctx, tag).await;
+        let parts = vec![
+            face_section(vec![
+                format!("## {} Tag Removed\nIGN - `{}`\n", EMOTE_REMOVETAG, name),
+                format!("~~**{} {}**~~\n> {}\n{}\n> -# **\\- Removed by `@{}`**", emote, display_name, format_tag_detail(tag), added_line, username),
+                format!("-# UUID: {dashed_uuid}"),
+            ]),
+            CreateContainerComponent::Separator(CreateSeparator::new(true)),
+        ];
+        let container = CreateContainer::new(parts).accent_color(COLOR_DANGER);
+        send_container(ctx, channel_id, container, vec![face]).await;
     }
 }
 
