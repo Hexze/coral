@@ -115,6 +115,17 @@ impl<'a> BlacklistRepository<'a> {
         .await
     }
 
+    pub async fn get_tag_by_id_any(&self, tag_id: i64) -> Result<Option<PlayerTagRow>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT id, player_id, tag_type, reason, added_by, added_on,
+                    hide_username, reviewed_by, removed_by, removed_on, expires_at
+             FROM player_tags WHERE id = $1",
+        )
+        .bind(tag_id)
+        .fetch_optional(self.pool)
+        .await
+    }
+
     pub async fn get_tag_history(&self, uuid: &str) -> Result<Vec<PlayerTagRow>, sqlx::Error> {
         sqlx::query_as(&format!(
             "SELECT {COLS}

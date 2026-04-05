@@ -63,7 +63,10 @@ async fn handle_event(ctx: &Context, data: &Data, event: BlacklistEvent) -> anyh
         }
 
         BlacklistEvent::TagRemoved { uuid, tag_id, removed_by } => {
-            let tag = fetch_tag(&repo, tag_id, "TagRemoved").await?;
+            let Some(tag) = repo.get_tag_by_id_any(tag_id).await? else {
+                tracing::warn!("tag {tag_id} not found for TagRemoved event");
+                return Ok(());
+            };
             let name = resolve_name(&cache, &uuid).await;
             channel::post_tag_removed(ctx, data, &uuid, &name, &tag, removed_by as u64).await;
         }
