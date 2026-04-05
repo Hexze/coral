@@ -98,6 +98,7 @@ pub struct AutoPreset {
     pub key: String,
     pub label: String,
     pub timestamp: DateTime<Utc>,
+    pub restricted: bool,
 }
 
 
@@ -431,6 +432,9 @@ fn create_session_dropdown<G: GameStats>(
     }
 
     for preset in auto_presets {
+        if preset.restricted && !is_owner {
+            continue;
+        }
         let key = format!("preset:{}", preset.key);
         let age = format_duration(now.signed_duration_since(preset.timestamp));
         let mut option = CreateSelectMenuOption::new(
@@ -438,7 +442,9 @@ fn create_session_dropdown<G: GameStats>(
             format!("preset:{}:{}", cache_key, preset.key),
         )
         .default_selection(current == key);
-        if let Some(desc) = descriptions.get(&key) {
+        if preset.restricted {
+            option = option.description("***");
+        } else if let Some(desc) = descriptions.get(&key) {
             option = option.description(desc.clone());
         }
         options.push(option);

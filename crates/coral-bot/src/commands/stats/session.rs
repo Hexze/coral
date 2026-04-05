@@ -767,6 +767,12 @@ fn resolve_period_switch<G: GameStats>(
     }
 
     if entry.sender_id != user_id {
+        let is_restricted = period_key.strip_prefix("preset:").is_some_and(|pk|
+            entry.auto_presets.iter().any(|p| p.key == pk && p.restricted)
+        );
+        if is_restricted {
+            return SwitchResult::Expired;
+        }
         return match render_selected_png::<G>(entry, period_key, &entry.current_mode.clone()) {
             Some(png) => SwitchResult::Ephemeral(png),
             None => SwitchResult::Expired,

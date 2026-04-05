@@ -137,7 +137,7 @@ impl GameStats for Bedwars {
     }
 
     async fn detect_auto_presets(cache_repo: &CacheRepository<'_>, uuid: &str, stats: &BedwarsPlayerStats) -> Vec<AutoPreset> {
-        detect_auto_presets_bedwars(cache_repo, uuid, stats.level as u64).await
+        detect_auto_presets_bedwars(cache_repo, uuid, stats.level as u64, stats.overall.winstreak.is_none()).await
     }
 
     fn overall_cache(data: &Data) -> &Arc<Mutex<HashMap<String, OverallCache<Self>>>> {
@@ -216,6 +216,7 @@ async fn detect_auto_presets_bedwars(
     cache_repo: &CacheRepository<'_>,
     uuid: &str,
     current_level: u64,
+    ws_hidden: bool,
 ) -> Vec<AutoPreset> {
     let snapshots = cache_repo
         .get_all_snapshots_mapped(uuid, |v| {
@@ -246,6 +247,7 @@ async fn detect_auto_presets_bedwars(
                 key: format!("prestige_{current_prestige}"),
                 label: format!("Since {}\u{272B}", current_prestige * 100),
                 timestamp: ts,
+                restricted: false,
             });
         }
     }
@@ -259,6 +261,7 @@ async fn detect_auto_presets_bedwars(
             key: "last_loss".to_string(),
             label: "Since Last Loss".to_string(),
             timestamp: ts,
+            restricted: ws_hidden,
         });
     }
 

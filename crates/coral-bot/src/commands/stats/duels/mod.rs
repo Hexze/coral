@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use hypixel::parsing::duels_winstreaks;
-use hypixel::{DuelsStats, DuelsView, DuelsWinstreakSnapshot, GuildInfo, extract_duels_stats, extract_duels_winstreak_snapshot};
+use hypixel::{DuelsStats, DuelsView, DuelsWinstreak, DuelsWinstreakSnapshot, GuildInfo, extract_duels_stats, extract_duels_winstreak_snapshot};
 use image::DynamicImage;
 use serenity::all::*;
 
@@ -120,8 +120,9 @@ impl GameStats for Duels {
         format!("+{} wins, +{} kills, {:.2} kd", wins, kills, kd)
     }
 
-    async fn detect_auto_presets(cache_repo: &CacheRepository<'_>, uuid: &str, _stats: &DuelsStats) -> Vec<AutoPreset> {
-        detect_auto_presets_duels(cache_repo, uuid).await
+    async fn detect_auto_presets(cache_repo: &CacheRepository<'_>, uuid: &str, stats: &DuelsStats) -> Vec<AutoPreset> {
+        let ws_hidden = matches!(stats.overview.current_winstreak, DuelsWinstreak::Unknown);
+        detect_auto_presets_duels(cache_repo, uuid, ws_hidden).await
     }
 
     fn overall_cache(data: &Data) -> &Arc<Mutex<HashMap<String, OverallCache<Self>>>> {
@@ -195,7 +196,7 @@ struct SnapshotFields {
 }
 
 
-async fn detect_auto_presets_duels(cache_repo: &CacheRepository<'_>, uuid: &str) -> Vec<AutoPreset> {
+async fn detect_auto_presets_duels(cache_repo: &CacheRepository<'_>, uuid: &str, ws_hidden: bool) -> Vec<AutoPreset> {
     let snapshots = cache_repo
         .get_all_snapshots_mapped(uuid, |value| {
             let duels = value.get("stats")?.get("Duels")?;
@@ -220,6 +221,7 @@ async fn detect_auto_presets_duels(cache_repo: &CacheRepository<'_>, uuid: &str)
             key: "since_loss".to_string(),
             label: "Since Last Loss".to_string(),
             timestamp,
+            restricted: ws_hidden,
         });
     }
 
