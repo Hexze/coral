@@ -93,6 +93,7 @@ pub async fn post_tag_removed(
     name: &str,
     tag: &PlayerTagRow,
     removed_by: u64,
+    silent: bool,
 ) {
     let def = lookup_tag(&tag.tag_type);
     let emote = def.map(|d| d.emote).unwrap_or("");
@@ -103,7 +104,7 @@ pub async fn post_tag_removed(
     let face = face_attachment(data, uuid).await;
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} Tag Removed\nIGN - `{}`", EMOTE_REMOVETAG, name),
+            format!("## {} Tag Removed\nIGN - `{}`\n", EMOTE_REMOVETAG, name),
             format!("**{} {}**\n> {}\n> -# **\\- Removed by `@{}`**", emote, display_name, format_tag_detail(tag), username),
             format!("-# UUID: {dashed_uuid}"),
         ]),
@@ -112,6 +113,12 @@ pub async fn post_tag_removed(
     .accent_color(COLOR_DANGER);
 
     send_to_mod_channel(ctx, data, container, vec![face]).await;
+
+    if !silent {
+        let repo = BlacklistRepository::new(data.db.pool());
+        let all_tags = repo.get_tags(uuid).await.unwrap_or_default();
+        post_to_blacklist_channel(ctx, data, uuid, name, &all_tags, "Tag Removed", EMOTE_REMOVETAG).await;
+    }
 }
 
 
@@ -142,7 +149,7 @@ pub async fn post_tag_changed(
     let face = face_attachment(data, uuid).await;
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} {}\nIGN - `{}`", EMOTE_EDITTAG, title, name),
+            format!("## {} {}\nIGN - `{}`\n", EMOTE_EDITTAG, title, name),
             format!("Previous: **{} {}**\n> {}\n{}", old_emote, old_display, format_tag_detail(old_tag), old_added_line),
         ]),
         CreateContainerComponent::Separator(CreateSeparator::new(true)),
@@ -330,7 +337,7 @@ async fn post_tag_to_log(
 
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} {}\nIGN - `{}`", emote, title, name),
+            format!("## {} {}\nIGN - `{}`\n", emote, title, name),
             format!("**{} {}**\n> {}\n{}", tag_emote, display_name, format_tag_detail(tag), added_line),
             format!("-# UUID: {dashed_uuid}"),
         ]),
@@ -370,8 +377,7 @@ async fn post_to_blacklist_channel(
 
     let face = face_attachment(data, uuid).await;
 
-    let mut section_parts = vec![format!("## {} {}\nIGN - `{}`", emote, title, name)];
-
+    let mut tag_texts = vec![];
     for tag in all_tags {
         let def = lookup_tag(&tag.tag_type);
         let tag_emote = def.map(|d| d.emote).unwrap_or("");
@@ -399,19 +405,25 @@ async fn post_to_blacklist_channel(
             }
         }
 
-        section_parts.push(tag_text);
+        tag_texts.push(tag_text);
     }
 
     let mut footer = format!("-# UUID: {dashed_uuid}");
     if let Some(ref url) = evidence_thread {
         footer.push_str(&format!(" | [Evidence]({url})"));
     }
-    section_parts.push(footer);
 
-    let parts = vec![
-        face_section(section_parts),
-        CreateContainerComponent::Separator(CreateSeparator::new(true)),
+    let header = format!("## {} {}\nIGN - `{}`\n", emote, title, name);
+    let first_tag = tag_texts.first().cloned().unwrap_or_default();
+
+    let mut parts = vec![
+        face_section(vec![header, first_tag]),
     ];
+    for tag_text in tag_texts.iter().skip(1) {
+        parts.push(CreateContainerComponent::TextDisplay(CreateTextDisplay::new(tag_text.clone())));
+    }
+    parts.push(CreateContainerComponent::TextDisplay(CreateTextDisplay::new(footer)));
+    parts.push(CreateContainerComponent::Separator(CreateSeparator::new(true)));
 
     send_container(ctx, channel_id, CreateContainer::new(parts), vec![face]).await
 }

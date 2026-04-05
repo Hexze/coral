@@ -324,10 +324,9 @@ async fn run_view(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
     let reviewers = player_tags.iter().flat_map(|t| t.reviewed_by.iter().flatten().copied());
     let resolved_names = resolve_names(&ctx.http, adders.chain(reviewers)).await;
 
-    let mut parts = vec![format!(
-        "## {} Tagged User{}\nIGN - `{}`\n", EMOTE_TAG, lock_indicator, player_info.username
-    )];
+    let header = format!("## {} Tagged User{}\nIGN - `{}`\n", EMOTE_TAG, lock_indicator, player_info.username);
 
+    let mut tag_texts = vec![];
     for tag in &player_tags {
         let (emote, display_name) = tag_display(&tag.tag_type);
 
@@ -364,19 +363,23 @@ async fn run_view(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
             display.push('\n');
             display.push_str(&line);
         }
-        parts.push(display);
+        tag_texts.push(display);
     }
 
     let mut footer = format!("-# UUID: {dashed_uuid}");
     if let Some(evidence_url) = evidence_thread {
         footer.push_str(&format!(" | [Evidence]({evidence_url})"));
     }
-    parts.push(footer);
 
-    let components: Vec<CreateContainerComponent> = vec![
-        face_section(parts),
-        CreateContainerComponent::Separator(CreateSeparator::new(true)),
+    let first_tag = tag_texts.first().cloned().unwrap_or_default();
+    let mut components: Vec<CreateContainerComponent> = vec![
+        face_section(vec![header, first_tag]),
     ];
+    for text in tag_texts.iter().skip(1) {
+        components.push(CreateContainerComponent::TextDisplay(CreateTextDisplay::new(text.clone())));
+    }
+    components.push(CreateContainerComponent::TextDisplay(CreateTextDisplay::new(footer)));
+    components.push(CreateContainerComponent::Separator(CreateSeparator::new(true)));
 
     let mut resp = EditInteractionResponse::new()
         .flags(MessageFlags::IS_COMPONENTS_V2)
@@ -454,7 +457,7 @@ async fn run_add(ctx: &Context, command: &CommandInteraction, data: &Data) -> Re
 
             let container = CreateContainer::new(vec![
                 face_section(vec![
-                    format!("## {} New Tag Applied\nIGN - `{}`", EMOTE_ADDTAG, player_info.username),
+                    format!("## {} New Tag Applied\nIGN - `{}`\n", EMOTE_ADDTAG, player_info.username),
                     format!("**{} {}**\n> {}\n{}", emote, display_name, sanitize_reason(reason), added_line),
                     format!("-# UUID: {dashed_uuid}"),
                 ]),
@@ -498,7 +501,7 @@ async fn show_overwrite_prompt(
 
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} Tag Overwrite\nIGN - `{}`", EMOTE_EDITTAG, player_info.username),
+            format!("## {} Tag Overwrite\nIGN - `{}`\n", EMOTE_EDITTAG, player_info.username),
             format!("**{} {}**\n> {}\n{}", old_emote, old_display, format_tag_detail(conflict), old_tag_added),
             format!("-# UUID: {dashed_uuid}"),
         ]),
@@ -554,7 +557,7 @@ pub async fn handle_overwrite_button(ctx: &Context, component: &ComponentInterac
 
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} Tag Overwritten\nIGN - `{}`", EMOTE_EDITTAG, player_name),
+            format!("## {} Tag Overwritten\nIGN - `{}`\n", EMOTE_EDITTAG, player_name),
             format!("**{} {}**\n> {}\n{}", emote, display_name, sanitize_reason(&overwrite.reason), added_line),
             format!("-# UUID: {dashed_uuid}"),
         ]),
@@ -619,7 +622,7 @@ async fn run_remove(ctx: &Context, command: &CommandInteraction, data: &Data) ->
 
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} Tag Removed\nIGN - `{}`", EMOTE_REMOVETAG, player_info.username),
+            format!("## {} Tag Removed\nIGN - `{}`\n", EMOTE_REMOVETAG, player_info.username),
             format!("**{} {}**\n> {}\n{}", emote, display_name, format_tag_detail(&tag), added_line),
             format!("-# UUID: {dashed_uuid}"),
         ]),
@@ -659,7 +662,7 @@ async fn run_lock(ctx: &Context, command: &CommandInteraction, data: &Data) -> R
     let dashed_uuid = format_uuid_dashed(&player_info.uuid);
     let container = CreateContainer::new(vec![
         face_section(vec![
-            format!("## {} Player Locked \u{1F512}\nIGN - `{}`", EMOTE_TAG, player_info.username),
+            format!("## {} Player Locked \u{1F512}\nIGN - `{}`\n", EMOTE_TAG, player_info.username),
             format!("> {}", sanitize_reason(reason)),
             format!("-# UUID: {dashed_uuid}"),
         ]),
@@ -972,7 +975,7 @@ pub async fn handle_manage_confirm(ctx: &Context, component: &ComponentInteracti
         Ok((_, tag)) => {
             let cache = CacheRepository::new(data.db.pool());
             let name = cache.get_username(uuid).await.ok().flatten().unwrap_or_else(|| uuid.to_string());
-            channel::post_tag_removed(ctx, data, uuid, &name, &tag, discord_id).await;
+            channel::post_tag_removed(ctx, data, uuid, &name, &tag, discord_id, true).await;
 
             if tag.tag_type == "confirmed_cheater" {
                 try_archive_evidence(ops.repo(), ctx, data, uuid).await;

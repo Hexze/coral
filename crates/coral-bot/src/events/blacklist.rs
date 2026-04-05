@@ -68,7 +68,7 @@ async fn handle_event(ctx: &Context, data: &Data, event: BlacklistEvent) -> anyh
                 return Ok(());
             };
             let name = resolve_name(&cache, &uuid).await;
-            channel::post_tag_removed(ctx, data, &uuid, &name, &tag, removed_by as u64).await;
+            channel::post_tag_removed(ctx, data, &uuid, &name, &tag, removed_by as u64, false).await;
         }
 
         BlacklistEvent::PlayerLocked { uuid, locked_by, reason } => {
