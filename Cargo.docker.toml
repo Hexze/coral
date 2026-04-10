@@ -12,6 +12,7 @@ members = [
     "crates/coral-admin",
     "crates/migration",
     "crates/mc-verify",
+    "crates/starfish-crypto",
 ]
 
 [workspace.package]
@@ -72,3 +73,8 @@ clients = { git = "https://github.com/Hexze/coral-clients", branch = "master" }
 database = { path = "crates/database" }
 coral-redis = { path = "crates/coral-redis" }
 render = { path = "crates/render" }
+starfish-crypto = { path = "crates/starfish-crypto" }
+
+# Crypto & encoding
+hex = "0.4"
+base64 = "0.22"

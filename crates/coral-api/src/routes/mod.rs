@@ -16,6 +16,7 @@ pub mod resolve;
 pub mod session;
 pub mod tags;
 pub mod verify;
+pub mod starfish;
 pub mod winstreaks;
 
 

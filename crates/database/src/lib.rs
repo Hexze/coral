@@ -23,4 +23,5 @@ pub use members::{Member, MemberRepository};
 pub use periods::Period;
 pub use pool::Database;
 pub use sessions::{SessionMarker, SessionRepository};
+pub use starfish::StarfishRepository;
 pub use tag_ops::{TagOp, TagOpError};

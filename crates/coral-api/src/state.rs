@@ -7,6 +7,17 @@ use database::Database;
 use crate::discord::DiscordResolver;
 
 
+pub struct StarfishConfig {
+    pub core_tables_bytes: Vec<u8>,
+    pub hmac_secret: [u8; 32],
+    pub signing_key: ed25519_dalek::SigningKey,
+    pub discord_client_id: String,
+    pub discord_client_secret: String,
+    pub github_token: String,
+    pub github_repo: String,
+}
+
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
@@ -18,6 +29,7 @@ pub struct AppState {
     pub event_publisher: EventPublisher,
     pub rate_limiter: RateLimiter,
     pub discord: Arc<DiscordResolver>,
+    pub starfish: Option<Arc<StarfishConfig>>,
 }
 
 
@@ -30,6 +42,7 @@ impl AppState {
         internal_api_key: Option<String>,
         redis: RedisPool,
         discord_token: Option<String>,
+        starfish: Option<StarfishConfig>,
     ) -> Self {
         Self {
             event_publisher: EventPublisher::new(redis.clone()),
@@ -44,6 +57,7 @@ impl AppState {
             skin_provider,
             internal_api_key,
             redis,
+            starfish: starfish.map(Arc::new),
         }
     }
 }
