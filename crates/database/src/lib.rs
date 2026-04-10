@@ -9,6 +9,7 @@ mod members;
 mod periods;
 mod pool;
 mod sessions;
+pub mod starfish;
 mod tag_ops;
 
 pub use access::AccessRank;

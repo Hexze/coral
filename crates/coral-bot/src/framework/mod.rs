@@ -240,6 +240,8 @@ impl Handler {
             _ if id.starts_with("manage_delete_dev:") => commands::admin::manage::handle_delete_dev_key(ctx, component, &self.data).await,
             _ if id.starts_with("manage_dev_perms:") => commands::admin::manage::handle_dev_perms_select(ctx, component, &self.data).await,
             _ if id.starts_with("manage_dev_rate_limit:") => commands::admin::manage::handle_dev_rate_limit_button(ctx, component, &self.data).await,
+            _ if id.starts_with("manage_sf_grant:") => commands::admin::manage::handle_sf_grant(ctx, component, &self.data).await,
+            _ if id.starts_with("manage_sf_revoke:") => commands::admin::manage::handle_sf_revoke(ctx, component, &self.data).await,
             _ if id.starts_with("review_add_replay:") => commands::blacklist::reviews::handle_add_replay(ctx, component, &self.data).await,
             _ if id.starts_with("review_attach_media:") => commands::blacklist::reviews::handle_attach_media(ctx, component, &self.data).await,
             _ if id.starts_with("review_edit_tag:") => commands::blacklist::reviews::handle_edit_tag(ctx, component, &self.data).await,

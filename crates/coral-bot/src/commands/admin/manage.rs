@@ -249,6 +249,47 @@ pub(crate) async fn build_main_view(
         }
     }
 
+    if invoker_rank >= AccessRank::Owner {
+        let sf_repo = database::starfish::StarfishRepository::new(data.db.pool());
+        let sf_user = sf_repo.get_user_by_discord_id(target_id as i64).await.ok().flatten();
+
+        parts.push(separator());
+        match &sf_user {
+            Some(u) => {
+                let status_label = match u.license_status.as_str() {
+                    "active" => "Active",
+                    "suspended" => "Suspended",
+                    _ => "Inactive",
+                };
+                parts.push(text(format!("### Starfish License\nStatus: **{status_label}**")));
+
+                let mut buttons = Vec::new();
+                if u.license_status == "active" {
+                    buttons.push(
+                        CreateButton::new(format!("manage_sf_revoke:{target_id}"))
+                            .label("Revoke License")
+                            .style(ButtonStyle::Danger),
+                    );
+                } else {
+                    buttons.push(
+                        CreateButton::new(format!("manage_sf_grant:{target_id}"))
+                            .label("Grant License")
+                            .style(ButtonStyle::Success),
+                    );
+                }
+                parts.push(CreateContainerComponent::ActionRow(CreateActionRow::buttons(buttons)));
+            }
+            None => {
+                parts.push(text("### Starfish License\n-# No Starfish account"));
+                parts.push(CreateContainerComponent::ActionRow(CreateActionRow::buttons(vec![
+                    CreateButton::new(format!("manage_sf_grant:{target_id}"))
+                        .label("Grant License")
+                        .style(ButtonStyle::Success),
+                ])));
+            }
+        }
+    }
+
     vec![CreateComponent::Container(CreateContainer::new(parts))]
 }
 
@@ -644,5 +685,43 @@ pub async fn handle_dev_perms_select(ctx: &Context, component: &ComponentInterac
     DeveloperKeyRepository::new(data.db.pool())
         .set_permissions(m.id, selected.iter().fold(0i64, |acc, &p| acc | p))
         .await?;
+    refresh_main(ctx, component, data, invoker_rank, target_id).await
+}
+
+
+pub async fn handle_sf_grant(ctx: &Context, component: &ComponentInteraction, data: &Data) -> Result<()> {
+    let target_id = interact::parse_id(&component.data.custom_id)
+        .ok_or_else(|| anyhow!("Invalid button ID"))?;
+    let (invoker_rank, _, _) = fetch_context(data, component.user.id.get(), target_id).await?;
+
+    if invoker_rank < AccessRank::Owner {
+        return interact::send_component_error(ctx, component, "Error", "Owner only").await;
+    }
+
+    let repo = database::starfish::StarfishRepository::new(data.db.pool());
+    repo.upsert_user(target_id as i64).await?;
+    repo.set_license_status(target_id as i64, "active").await?;
+
+    refresh_main(ctx, component, data, invoker_rank, target_id).await
+}
+
+
+pub async fn handle_sf_revoke(ctx: &Context, component: &ComponentInteraction, data: &Data) -> Result<()> {
+    let target_id = interact::parse_id(&component.data.custom_id)
+        .ok_or_else(|| anyhow!("Invalid button ID"))?;
+    let (invoker_rank, _, _) = fetch_context(data, component.user.id.get(), target_id).await?;
+
+    if invoker_rank < AccessRank::Owner {
+        return interact::send_component_error(ctx, component, "Error", "Owner only").await;
+    }
+
+    let repo = database::starfish::StarfishRepository::new(data.db.pool());
+    repo.set_license_status(target_id as i64, "suspended").await?;
+
+    if let Some(user) = repo.get_user_by_discord_id(target_id as i64).await? {
+        repo.delete_user_sessions(user.id).await.ok();
+        repo.delete_user_refresh_tokens(user.id).await.ok();
+    }
+
     refresh_main(ctx, component, data, invoker_rank, target_id).await
 }

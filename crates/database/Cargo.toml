@@ -19,3 +19,5 @@ async-trait.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 dotenvy = "0.15"
+sha2 = "0.10"
+hex = "0.4"
