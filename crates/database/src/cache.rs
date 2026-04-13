@@ -32,14 +32,25 @@ impl<'a> CacheRepository<'a> {
     pub fn new(pool: &'a PgPool) -> Self { Self { pool } }
 
     pub async fn count_snapshots(&self) -> Result<i64, sqlx::Error> {
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM player_snapshots")
-            .fetch_one(self.pool).await?;
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT reltuples::bigint FROM pg_class WHERE relname = 'player_snapshots'",
+        )
+        .fetch_one(self.pool)
+        .await?;
         Ok(count)
     }
 
     pub async fn count_unique_players(&self) -> Result<i64, sqlx::Error> {
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT uuid) FROM player_snapshots")
-            .fetch_one(self.pool).await?;
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT CASE WHEN s.n_distinct >= 0 THEN s.n_distinct
+                         ELSE -s.n_distinct * c.reltuples
+                    END::bigint
+             FROM pg_stats s, pg_class c
+             WHERE s.tablename = 'player_snapshots' AND s.attname = 'uuid'
+               AND c.relname = 'player_snapshots'",
+        )
+        .fetch_one(self.pool)
+        .await?;
         Ok(count)
     }
 

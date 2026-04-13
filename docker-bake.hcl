@@ -1,4 +1,4 @@
-variable "REGISTRY" { default = "ghcr.io/hexze/coral" }
+variable "REGISTRY" { default = "" }
 variable "SHA"      { default = "" }
 
 group "default" {

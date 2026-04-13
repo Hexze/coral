@@ -5,7 +5,7 @@ networks:
 
 services:
   postgres:
-    image: ghcr.io/hexze/coral/coral-postgres:latest
+    image: ghcr.io/${CORAL_GITHUB_REPO:-}/coral-postgres:latest
     pull_policy: always
     container_name: coral-postgres
     restart: unless-stopped
@@ -53,7 +53,7 @@ services:
       - apps
 
   coral-api:
-    image: ghcr.io/hexze/coral/coral-api:latest
+    image: ghcr.io/${CORAL_GITHUB_REPO:-}/coral-api:latest
     pull_policy: always
     container_name: coral-api
     restart: unless-stopped
@@ -95,7 +95,7 @@ services:
       - apps
 
   coral-web:
-    image: ghcr.io/hexze/coral/coral-web:latest
+    image: ghcr.io/${CORAL_GITHUB_REPO:-}/coral-web:latest
     pull_policy: always
     container_name: coral-web
     restart: unless-stopped
@@ -114,7 +114,7 @@ services:
       - apps
 
   coral-bot:
-    image: ghcr.io/hexze/coral/coral-bot:latest
+    image: ghcr.io/${CORAL_GITHUB_REPO:-}/coral-bot:latest
     pull_policy: always
     container_name: coral-bot
     restart: unless-stopped
