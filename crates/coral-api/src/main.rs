@@ -120,7 +120,7 @@ fn parse_starfish_config() -> Option<StarfishConfig> {
         discord_client_id: env::var("STARFISH_DISCORD_CLIENT_ID").expect("STARFISH_DISCORD_CLIENT_ID required when Starfish is enabled"),
         discord_client_secret: env::var("STARFISH_DISCORD_CLIENT_SECRET").expect("STARFISH_DISCORD_CLIENT_SECRET required when Starfish is enabled"),
         github_token: env::var("STARFISH_GITHUB_TOKEN").expect("STARFISH_GITHUB_TOKEN required when Starfish is enabled"),
-        github_repo: env::var("STARFISH_GITHUB_REPO").unwrap_or_else(|_| "UrchinGG/Starfish-Rust".to_string()),
+        github_repo: env::var("STARFISH_GITHUB_REPO").expect("STARFISH_GITHUB_REPO required when Starfish is enabled"),
     };
     tracing::info!("Starfish licensing enabled ({} bytes core tables)", config.core_tables_bytes.len());
     Some(config)
